@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 77a9f48..7287e08 100644
+index 77a9f48..731403c 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -740,17 +740,55 @@ struct sweet_log_header {
@@ -7,7 +7,7 @@ index 77a9f48..7287e08 100644
  };
  
 +/*
-+ * Boot-arg sweetreset=N: N seconds after boot, flush the console log once
++ * Boot-arg sweetreset=N: N seconds after the log starts, flush the console log once
 + * more and reset the SoC with the bootloader restart reason (as the shim
 + * does), so a host script can boot a recovery and pull the log without
 + * anyone touching the phone. Only from this thread, so the last lines are
@@ -58,14 +58,18 @@ index 77a9f48..7287e08 100644
  		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
  		if (total == flushed) {
  			continue;
-@@ -884,6 +922,11 @@ sweet_log_start(void)
+@@ -884,6 +922,15 @@ sweet_log_start(void)
  	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
  		sweet_log_secs = SWEET_LOG_SECS;
  	}
 +	uint32_t reset_secs = 0;
 +	if (PE_parse_boot_argn("sweetreset", &reset_secs, sizeof(reset_secs)) && reset_secs) {
-+		nanoseconds_to_absolutetime((uint64_t)reset_secs * NSEC_PER_SEC, &sweet_reset_at);
-+		printf("SWEET RESET: reboot to the bootloader %u s after boot\n", reset_secs);
++		/* From now: the arch counter keeps running from the last SoC reset,
++		 * not from this fastboot boot. */
++		uint64_t delta;
++		nanoseconds_to_absolutetime((uint64_t)reset_secs * NSEC_PER_SEC, &delta);
++		sweet_reset_at = mach_absolute_time() + delta;
++		printf("SWEET RESET: reboot to the bootloader in %u s\n", reset_secs);
 +	}
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
