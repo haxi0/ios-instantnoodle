@@ -116,5 +116,10 @@ df -h "$work/root"
 sudo umount "$work/root"
 # Linux hfsplus decomposes some non-ASCII names (localized Shortcuts examples)
 # differently from Apple's tables; let fsck_hfs rewrite them, then verify.
-fsck.hfsplus -f -y "$out" | grep -v 'Illegal name' || true
-fsck.hfsplus -f -n "$out"
+# Through a loop device: newer hfsprogs (627.40.1) refuse an image file with
+# "Can't get device block size".
+loop=$(sudo losetup -f --show "$out")
+sudo fsck.hfsplus -f -y "$loop" | grep -v 'Illegal name' || true
+rc=0; sudo fsck.hfsplus -f -n "$loop" || rc=$?
+sudo losetup -d "$loop"
+exit $rc
