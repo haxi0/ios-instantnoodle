@@ -1,0 +1,106 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 77a9f48..7287e08 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -740,17 +740,55 @@ struct sweet_log_header {
+ 	uint64_t total, seq;
+ };
+ 
++/*
++ * Boot-arg sweetreset=N: N seconds after boot, flush the console log once
++ * more and reset the SoC with the bootloader restart reason (as the shim
++ * does), so a host script can boot a recovery and pull the log without
++ * anyone touching the phone. Only from this thread, so the last lines are
++ * on disk first.
++ */
++static uint64_t sweet_reset_at;
++
++static void __attribute__((noreturn))
++sweet_reset_to_bootloader(void)
++{
++	volatile uint32_t *imem = (volatile uint32_t *)ml_io_map(SWEET_DEV_IMEM_RESTART_PA, 4);
++	volatile uint32_t *pshold = (volatile uint32_t *)ml_io_map(SWEET_DEV_PSHOLD_PA, 4);
++
++	if (imem) {
++		*imem = 0x77665500u;    /* bootloader: stay in fastboot */
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++	register uint64_t x0 __asm__("x0") = 0x84000009ull;    /* PSCI SYSTEM_RESET */
++	__asm__ volatile("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
++	if (pshold) {
++		*pshold = 0;
++	}
++	for (;;) {
++		__asm__ volatile("wfe");
++	}
++}
++
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+ 	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
+ 	uint64_t flushed = 0, seq = 0;
+ 	void *bounce = (void *)(su.dma + DMA_BOUNCE);
++	bool reset_announced = false;
+ 
+ 	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
+ 	for (;;) {
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
++		if (sweet_reset_at && mach_absolute_time() >= sweet_reset_at) {
++			if (reset_announced) {
++				/* The announcement was flushed by the previous pass. */
++				sweet_reset_to_bootloader();
++			}
++			printf("SWEET RESET: sweetreset deadline reached, rebooting to the bootloader after this flush\n");
++			reset_announced = true;
++		}
+ 		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
+ 		if (total == flushed) {
+ 			continue;
+@@ -884,6 +922,11 @@ sweet_log_start(void)
+ 	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
+ 		sweet_log_secs = SWEET_LOG_SECS;
+ 	}
++	uint32_t reset_secs = 0;
++	if (PE_parse_boot_argn("sweetreset", &reset_secs, sizeof(reset_secs)) && reset_secs) {
++		nanoseconds_to_absolutetime((uint64_t)reset_secs * NSEC_PER_SEC, &sweet_reset_at);
++		printf("SWEET RESET: reboot to the bootloader %u s after boot\n", reset_secs);
++	}
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+diff --git a/pexpert/pexpert/arm64/sweet_dev.h b/pexpert/pexpert/arm64/sweet_dev.h
+index 283bcfc..22348e7 100644
+--- a/pexpert/pexpert/arm64/sweet_dev.h
++++ b/pexpert/pexpert/arm64/sweet_dev.h
+@@ -77,6 +77,9 @@
+ #define SWEET_DEV_USB_VBUS_DEFAULT 3
+ /* Reset-surviving scratch (DRAM, kernel high bank 0x180000000 + 0x18000000). */
+ #define SWEET_DEV_MARK_PA       0x198000000UL
++/* Reboot-to-bootloader (sweetreset=N): IMEM restart_reason word and PS_HOLD. */
++#define SWEET_DEV_IMEM_RESTART_PA 0x146bf65cu
++#define SWEET_DEV_PSHOLD_PA     0x0c264000u
+ 
+ /* Panel physical size in mm (ana6705 node: 70 x 151). */
+ #define SWEET_DEV_PANEL_MM_W    70
+@@ -140,6 +143,9 @@
+ /* Reset-surviving scratch for the USB gadget progress marker (DRAM, above
+  * the kernel image/ADT/boot_args; the shim reads the same word). */
+ #define SWEET_DEV_MARK_PA       0x198000000UL
++/* Reboot-to-bootloader (sweetreset=N): IMEM restart_reason word and PS_HOLD. */
++#define SWEET_DEV_IMEM_RESTART_PA 0x146bf65cu
++#define SWEET_DEV_PSHOLD_PA     0x0c264000u
+ /* SM8150's DWC3 wedges (bus hang -> watchdog -> EDL) if STARTTRANSFER is
+  * issued before the host has reset the bus, so arm ep0 on USB reset /
+  * XferNotReady instead of at bring-up. */
+@@ -231,6 +237,9 @@
+ #define SWEET_DEV_TOUCH_VREG_NAME "ldoc11"
+ #define SWEET_DEV_TOUCH_VREG_MV 3200
+ #define SWEET_DEV_MARK_PA       0x118000000UL
++/* Reboot-to-bootloader (sweetreset=N): IMEM restart_reason word and PS_HOLD. */
++#define SWEET_DEV_IMEM_RESTART_PA 0x146aa65cu
++#define SWEET_DEV_PSHOLD_PA     0x0c264000u
+ #define SWEET_DEV_USB_ARM_ON_EVENT 0
+ #define SWEET_DEV_USB_VBUS_DEFAULT 2
+ #define SWEET_DEV_KEYS_VOLUME   1   /* GPIO2 volume-up + PON RESIN volume-down */
