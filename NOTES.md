@@ -75,6 +75,26 @@
   userdata) from a recovery with adb root (OnePlus 8 TWRP/OrangeFox via
   `fastboot boot`, not flashed) and look for the service SpringBoard waits
   on; do not leave the console on for hours (AMOLED burn-in).
+- **First pulled log (2026-10-22 01:46, `logs/noodle-0137-cpus8.txt`,
+  1789 lines, 31 flushes, TWRP 3.7.0_11-0 `recovery/twrp.img` via
+  `fastboot boot` + `tools/sweet-log-pull.sh`).** 8/8 CPUs, HFS+ root mounted
+  (journal replayed), all launchd boot tasks, ~150 daemons. backboardd
+  opens SweetHIDTouch/Buttons, IOMFB, IOSurface, `display on`, creates
+  1125x2436 BGRA surfaces and swaps frames 2/3/4 (the Apple logo).
+  `com.apple.datamigrator` runs (exec twice); SpringBoard shows nothing
+  while migration runs, and every forced reboot so far interrupted it. Only
+  crash: driverkitd SIGKILL (harmless). Keys reach HID (vol-up 0xe9, power
+  0x30). backboardd polls `IOAcceleratorES` (0 found) many times before
+  continuing - topaz added an empty IOAcceleratorES (0138) for this, watch
+  it if SpringBoard still stalls after migration.
+- **Unattended test loop (`bf97eba`):** xnu **0104** adds boot-arg
+  `sweetreset=N` (log thread prints `SWEET RESET`, flushes, then IMEM
+  restart reason 0x77665500 + PSCI SYSTEM_RESET -> phone back in fastboot).
+  `tools/noodle-run.sh NAME SECS ["boot-args"]` builds an image from
+  `xnu/out/kernel.development.instantnoodle` (cpus=8, noconsole,
+  sweetreset=SECS), boots it, waits for the reset, boots TWRP, pulls
+  `logs/NAME.txt` and reboots to fastboot. CI now defaults
+  `machine_config` to INSTANTNOODLE (`5af3250`).
 - **Not done yet:**
   upstream ios-sweet's 4 newer commits (`1664d63` mkadt `/pram` panic region,
   `4c7cc91` site, `4274e51` validator, `6838e1d` qemu runner) not merged.
