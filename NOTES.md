@@ -23,8 +23,39 @@
   `shim/out/shim-boot.img` and the host render shows the live-FDT report;
   `mkadt --device instantnoodle --highmem` builds the ADT with `/product`
   (`research/ipsw-x/d22ap.adt` extracted from the 20H392 IPSW).
-- **Not done yet:** no CI kernel build for `INSTANTNOODLE`, nothing booted on
-  the phone (probe boot is step 1 in `INSTANTNOODLE.md`), no iOS root image,
+- **Probe boot verified on the IN2010 (2026-10-22 00:24).** `fastboot boot
+  shim/out/probe-instantnoodle.img` (SHA256 `c0a69afc...`): red report with
+  `BOARD instantnoodle`, `COMPAT qcom,kona-mtp`, the three MEM banks, GIC,
+  IMEM, PS_HOLD, UFS 0x1d84000, HS PHY 0x88e3000, `CPUS n=08 000..700`, then
+  the 180 s countdown; the phone came back in fastboot by itself (~117 s after
+  the next check). ABL splash handover at 0x9c000000 works.
+- **First INSTANTNOODLE kernel:** commit `a9ed42e`, CI run `39677135010`
+  (DEVELOPMENT, green; the push-triggered SWEET run `39677052727` cancelled
+  the first dispatch `39677043196` through the workflow's concurrency group -
+  dispatch after the push run starts, or cancel it). Kernel SHA256
+  `7de12b0c...`. Image `shim/out/noodle-k0103-cpus1.img` (SHA256
+  `1f6d5ef8...`, `cpus=1`, no `sweetfb_noconsole`) booted 2026-10-22 00:35:37
+  with `userdata` still Android (no iOS root). **Result: froze after
+  `SWEET CPU: 1/1 CPUs initialized, SGI1 verified`** (no output for 40 min;
+  platform expert, AKS, WDT, SURF, HID, battery and `SWEET FB: AppleCLCD
+  1080x2400 stride 4320 at 0x9c000000` all came up before it).
+- **Cause: wrong virtual-timer INTID.** SM8250's arm,armv8-timer uses the
+  standard PPI numbering (`<1 13>, <1 14>, <1 11>, <1 12>`): CNTV = PPI 11 =
+  INTID **27**. The scaffold had copied SM8150's Qualcomm numbering (19), so
+  no timer interrupt ever arrived; SGIs work, which is why CPU init passed.
+  Fixed in `tools/devices.py` (the kernel takes `virtual-timer-intid` from the
+  ADT, `pexpert/arm/pe_fiq.c`), `shim/boards/instantnoodle.h` (27/30) and the
+  0103 default in `INSTANTNOODLE.h`; `tools/fdt-audit.py` now checks the
+  timer INTID (21/21 on the IN2010).
+- **Second boot (2026-10-22 00:42:54), same kernel + fixed ADT,
+  `shim/out/noodle-k0103-vt27.img` (SHA256 `c43eb011...`): reaches the root
+  mount.** `BSD root: ufsroot0, major 1, minor 0` - the UFS driver reads
+  `userdata` on SM8250 - then `hfs_ValidateHFSPlusVolumeHeader: unknown
+  Volume Signature : bfe0` / `cannot mount root, errno = 19`, retried
+  `mount(3)`..`mount(10)`. Expected: `userdata` is still Android. Note: with
+  `ufsrw=1` the sweetlog ring writes the last ~4 MiB of `userdata`, so
+  Android's userdata tail is no longer intact (wipe approved 2026-10-21).
+- **Next:** iOS root image into `userdata` (`tools/mkiosroot.sh`, needs sudo), then `cpus=8`. **Not done yet:**
   upstream ios-sweet's 4 newer commits (`1664d63` mkadt `/pram` panic region,
   `4c7cc91` site, `4274e51` validator, `6838e1d` qemu runner) not merged.
 

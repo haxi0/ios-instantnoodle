@@ -247,6 +247,12 @@ def main():
     check('gicd base', by['interrupt-controller'][0][0] if 'interrupt-controller' in by else None, dev['gicd'])
     check('gicr base', by['interrupt-controller'][1][0] if len(by.get('interrupt-controller', [])) > 1 else None, dev['gicr'])
     check('ufs base', by['ufshc'][0][0] if 'ufshc' in by else None, dev['ufs'])
+    # arm,armv8-timer interrupts: sec phys, phys, virt, hyp; CNTV = PPI 16 + n
+    timer = next((n for n in got['nodes'] if n['props'].get('compatible', b'').startswith(b'arm,armv8-timer')), None)
+    vt = None
+    if timer and len(timer['props'].get('interrupts', b'')) >= 36:
+        vt = 16 + int.from_bytes(timer['props']['interrupts'][28:32], 'big')
+    check('vtimer intid', vt, dev['vtimer_intid'])
     check('spmi core', first_in('spmi', 0x0c000000, 0x0d000000), mirror['SPMI core'])
     check('dwc3 base', first_in('dwc3', 0x0a000000, 0x0b000000), mirror['USB DWC3'])
     check('hs phy base', first_in('hsphy', 0x08000000, 0x0a000000), mirror['USB HS PHY'])

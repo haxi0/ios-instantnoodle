@@ -211,10 +211,10 @@ index 257cc65..628c652 100644
  endif
 diff --git a/pexpert/pexpert/arm64/INSTANTNOODLE.h b/pexpert/pexpert/arm64/INSTANTNOODLE.h
 new file mode 100644
-index 0000000..5b2b7be
+index 0000000..0ee9c4a
 --- /dev/null
 +++ b/pexpert/pexpert/arm64/INSTANTNOODLE.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,83 @@
 +/*
 + * Board config for the OnePlus 8 ("instantnoodle", Qualcomm SM8250 /
 + * Snapdragon 865): Kryo 585 = 4x Cortex-A55 + 4x Cortex-A77, ARMv8.2,
@@ -259,11 +259,12 @@ index 0000000..5b2b7be
 +#endif /* ! ASSEMBLER */
 +
 +/*
-+ * Qualcomm PPI numbering (secure phys, phys, virt, hyp = 1/2/3/0) instead
-+ * of the usual 13/14/11/10: the virtual timer XNU uses (CNTV) is 16+3.
-+ * Must match the virtual-timer-intid the ADT publishes for /gic.
++ * SM8250 uses the standard PPI numbering (arm,armv8-timer <1 13>, <1 14>,
++ * <1 11>, <1 12>), unlike SM7150/SM8150's Qualcomm numbering: the virtual
++ * timer XNU uses (CNTV) is PPI 11 = INTID 27. The ADT's virtual-timer-intid
++ * overrides this default (pexpert/arm/pe_fiq.c); both must say 27.
 + */
-+#define SWEET_VTIMER_INTID        19
++#define SWEET_VTIMER_INTID        27
 +#define SWEET_IPI_SGI             1       // SGI used for cross-CPU signals
 +
 +#define GIC_SPURIOUS_IRQ          1023    // IRQ no. for GIC spurious interrupt

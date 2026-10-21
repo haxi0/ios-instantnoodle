@@ -18,8 +18,10 @@
 #define GICR_BASE	0x17a60000UL
 #define GICR_SIZE	0x100000UL
 #define GICR_PE_SIZE	0x20000UL
-#define VTIMER_INTID	19	/* GIC_PPI 3 numbering, as on SM8150 */
-#define PTIMER_INTID	18
+/* Standard PPI numbering on SM8250 (live FDT arm,armv8-timer <1 13>,
+ * <1 14>, <1 11>, <1 12>): virt = PPI 11, non-secure phys = PPI 14. */
+#define VTIMER_INTID	27
+#define PTIMER_INTID	30
 
 /* SoC-level reset registers: qcom,msm-imem@146bf000 (restart_reason@65c)
  * and restart@c264000, both the same as SM8150. */

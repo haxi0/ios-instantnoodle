@@ -119,7 +119,11 @@ DEVICES = {
         'gicr': 0x17a60000,          # confirmed
         'gicr_size': 0x100000,
         'timebase': 19200000,
-        'vtimer_intid': 19,          # GIC_PPI 3 numbering, as on SM8150
+        # SM8250 uses the standard PPI numbering (arm,armv8-timer
+        # interrupts = <1 13>, <1 14>, <1 11>, <1 12>): CNTV = PPI 11 =
+        # INTID 27, not SM8150's Qualcomm numbering (19). 19 starved the
+        # scheduler of timer ticks: the first boot froze after CPU init.
+        'vtimer_intid': 27,          # confirmed (live FDT)
         # reserved-memory cont_splash_region 0x9c000000 + 0x02300000 (live
         # FDT). Panel: Samsung ana6705 (AMB655XL), 1080x2400 DSC cmd mode.
         'fb': 0x9c000000,

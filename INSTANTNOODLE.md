@@ -6,10 +6,11 @@ reuses ABL's continuous-splash framebuffer, runs the unmodified iPhone X iOS
 16.7.16 userland, and keeps its HFS+ root inside `userdata`.** The userland,
 the ADT identity (`D22AP` / `iPhone10,3`) and the root image are unchanged.
 
-Status (2026-10-21): **scaffold only, nothing booted yet.** Board profile,
-shim board header, kernel machine config `INSTANTNOODLE` (patch 0103) and the
-ADT build are in place; the probe shim builds and renders the phone's live-FDT
-report on the host. No image has been booted on the phone.
+Status (2026-10-22): **XNU boots on the IN2010 to the root mount.** The
+probe shim shows the live-FDT report on the panel; the `INSTANTNOODLE` kernel
+(CI run `39677135010`) brings up the platform expert, framebuffer, HID and the
+UFS driver and tries to mount `ufsroot0`, which fails as expected while
+`userdata` is still Android. Next: the iOS root image.
 
 ## Where the device lives in the tree
 
@@ -51,7 +52,7 @@ root, 8 GB RAM. Pulled read-only (all gitignored):
 | Memory | `0x80000000+0x3bb00000`, `0xc0000000+0xc0000000`, `0x180000000+0x100000000` (same as guacamole) | live FDT |
 | Splash | `cont_splash_region` **0x9c000000 + 0x02300000** | live FDT |
 | Panel | Samsung **ana6705** (`qcom,mdss_dsi_samsung_ana6705_dsc_cmd`), 1080x2400 DSC cmd, 70 x 151 mm | cmdline, live FDT |
-| GIC / timer | 0x17a00000 / 0x17a60000, timer 0x17c20000 | live FDT |
+| GIC / timer | 0x17a00000 / 0x17a60000, timer 0x17c20000; arch timer **standard PPIs** (virt PPI 11 = INTID 27, not SM8150's 19) | live FDT |
 | UFS | `ufshc@1d84000`, PHY `0x1d87000` | live FDT |
 | SPMI | `qcom,spmi@c440000` (same regs as SM8150); PM8150 = SID 0 | live FDT |
 | Keys | power = PM8150 PON; volume up/down = **PM8150 GPIO6/GPIO7**, active low (guacamole layout) | live FDT `gpio-keys` |
