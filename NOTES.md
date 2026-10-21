@@ -108,6 +108,24 @@
   Apple logo) ever reached the panel and the lock screen was never drawn.
   The LS database persists in userdata, so warm boots should be faster;
   waking the display needs the power key (HID path verified).
+- **Run 3 (02:35, warm boot, kernel `xnu/out-0104b` = 484d2ea / CI
+  39691203717, `sweetreset=600`) did not come back on USB** within 15 min;
+  nothing enumerated at all. Either the reset fired and ABL did not attach to
+  USB (the OnePlus quirk: after a reboot with the cable in, ABL often never
+  pulls up; runs 1/2 happened to attach) or the reset did not fire. Unknown
+  without looking at the phone. A 30-min watcher then pulls
+  `logs/noodle-warm3.txt` and powers the phone off from TWRP if it shows up.
+- **NEXT SESSION (start here):** 1) look at the phone; if it shows the
+  fastboot screen, replug the cable and run
+  `tools/noodle-run.sh noodle-warm4 600` with
+  `KERNEL=xnu/out-0104b/kernel.development.instantnoodle` - the LS database
+  is built now, so SpringBoard should reach its run loop in a few minutes;
+  check `logs/*.txt` for `SWEET FB: swap 5..16` (lock screen frames). 2) For
+  a visual check boot `noodle-k0103-cpus8-nocon.img`-style (no sweetreset),
+  wait ~5 min and press the power key once: the display turns off on idle
+  and only the power key wakes it. 3) To stop needing replugs: USB gadget
+  (SM8250 GCC offsets, `SWEET_DEV_USB`) for the live UDP log, or a kernel
+  screenshot dump next to the log ring.
 - **Not done yet:**
   upstream ios-sweet's 4 newer commits (`1664d63` mkadt `/pram` panic region,
   `4c7cc91` site, `4274e51` validator, `6838e1d` qemu runner) not merged.
