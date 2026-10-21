@@ -2,6 +2,32 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### Session handoff (2026-10-22 00:15): instantnoodle (OnePlus 8) scaffold
+- This repo (`haxi0/ios-instantnoodle`) now targets the **OnePlus 8**
+  (instantnoodle, SM8250) as a third board; see `INSTANTNOODLE.md` for the
+  board facts and bring-up sequence. guacamole and sweet stay buildable.
+- Phone: IN2010, OOS 11, slot `_b`, unlocked, Magisk root. Live FDT, /proc,
+  dmesg and 118 partition images (all except `userdata`, sha256-verified) are
+  pulled (gitignored: `dtb/`, `research/`, `backup/`).
+- Added: `tools/devices.py` `instantnoodle`, `shim/boards/instantnoodle.h`,
+  `tools/fdt-audit.py` profile (+ kona `rsc@` RPMh parsing, per-board touch
+  bus), `shim/probe.c` skips the SM8150 TLMM test when a board has no
+  `BOARD_TLMM_PA`, kernel patch **0103** (`INSTANTNOODLE` machine config,
+  `INSTANTNOODLE.h`, `MASTER.arm64.instantnoodle`, IOKit match
+  `oneplus,instantnoodle`/`qcom,kryo585`, `sweet_dev.h` block with touch and
+  USB off, volume keys on), stage scripts accept `INSTANTNOODLE`.
+- Verified locally: `fdt-audit` 20/20; full CI-order replay of pristine
+  xnu-8796.141.3 + dxb + all patches applies for `INSTANTNOODLE` (the 4 usual
+  dxb patches skipped; the stage scripts' final `xcrun` step fails on Linux
+  for GUACAMOLE too); `BOARD=instantnoodle shim/build.sh` builds
+  `shim/out/shim-boot.img` and the host render shows the live-FDT report;
+  `mkadt --device instantnoodle --highmem` builds the ADT with `/product`
+  (`research/ipsw-x/d22ap.adt` extracted from the 20H392 IPSW).
+- **Not done yet:** no CI kernel build for `INSTANTNOODLE`, nothing booted on
+  the phone (probe boot is step 1 in `INSTANTNOODLE.md`), no iOS root image,
+  upstream ios-sweet's 4 newer commits (`1664d63` mkadt `/pram` panic region,
+  `4c7cc91` site, `4274e51` validator, `6838e1d` qemu runner) not merged.
+
 ### Session handoff (2026-10-21 22:20)
 - **0087 verified on hardware.** Booted `img-gpu-0087.img` (`sweetgpu=3`) at
   18:05; iOS reached SpringBoard (SpringBoard/AKS/touch lines), then

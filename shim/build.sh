@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the shim and wrap it in a boot.img v2 that mirrors the stock PixelOS header.
-#   BOARD=sweet      (default) or BOARD=guacamole  -> shim/boards/<board>.h
+#   BOARD=sweet      (default), guacamole or instantnoodle -> shim/boards/<board>.h
 #   DTB=<file>       stock DTB fed to ABL (default dtb/boot_unpacked/dtb)
 set -euo pipefail
 cd "$(dirname "$0")"

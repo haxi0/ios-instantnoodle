@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Audit a device's live FDT against the board profile the port was built with.
 
-    tools/fdt-audit.py LIVE.dtb [--device guacamole] [--profile-only]
+    tools/fdt-audit.py LIVE.dtb [--device guacamole|instantnoodle] [--profile-only]
 
 LIVE.dtb is usually /sys/firmware/fdt pulled from the phone (root):
     adb exec-out "su -c cat /sys/firmware/fdt" > dtb/<board>-live.dtb
@@ -32,7 +32,24 @@ MIRROR = {
         'USB HS PHY': 0x088e2000,
         'USB QMP PHY': 0x088e8000,
         'RCG/SE17': 0x00c80000,
+        'Touch bus': 'i2c@c80000',
         'TLMM': 0x03000000,
+        'PSHOLD': 0x0c264000,
+        'IMEM': 0x146bf000,
+        'RPMh RSC': 0x18220000,
+        'RPMh TCS': 0x18220d00,
+        'RPMh cmd DB': 0x0c3f000c,
+    },
+    'instantnoodle': {
+        'SPMI core': 0x0c440000,
+        'SPMI observer': 0x0e600000,
+        'SPMI config': 0x0c40a000,
+        'USB GCC': 0x00100000,
+        'USB DWC3': 0x0a600000,
+        'USB HS PHY': 0x088e3000,
+        'USB QMP PHY': 0x088e8000,
+        'Touch bus': 'i2c@a94000',
+        'TLMM': 0x0f000000,
         'PSHOLD': 0x0c264000,
         'IMEM': 0x146bf000,
         'RPMh RSC': 0x18220000,
@@ -153,7 +170,7 @@ def collect(fdt):
                                         'ufsphy', 'ufsphy_mem', 'ssusb', 'dwc3', 'hsphy',
                                         'qusb2phy', 'ssphy', 'eud', 'msm-eud', 'pinctrl',
                                         'clock-controller', 'gcc', 'mailbox', 'msm-imem',
-                                        'restart'):
+                                        'restart', 'rsc'):
             for base, size in fdt.cells(val, ac, sc):
                 out['interest'].append((leaf, cur['name'], base, size))
     return out
@@ -241,19 +258,32 @@ def main():
           first_in('ufsphy', 0x01000000, 0x02000000), mirror.get('UFS PHY', 0x01d87000))
     check('imem base', first_in('msm-imem', 0, 0xffffffff), mirror['IMEM'])
     check('pshold base', first_in('restart', 0x0c000000, 0x0d000000), mirror['PSHOLD'])
-    check('rpmh rsc', first_in('mailbox', 0x18200000, 0x18300000), mirror['RPMh RSC'])
-    check('rpmh tcs', next((b for b, s in by.get('mailbox', []) if 0x18200000 <= b < 0x18300000 and b != mirror['RPMh RSC']), None),
-          mirror['RPMh TCS'])
+    # SM8150 lists the apps RSC as mailbox regs; SM8250 as rsc@18200000 with
+    # one reg per DRV, qcom,drv-id and qcom,tcs-offset.
+    rsc = next((n for n in got['nodes'] if n['name'].startswith('rsc@182')
+                and 'qcom,drv-id' in n['props']), None)
+    if rsc:
+        drvs = [b for leaf, name, b, s in got['interest'] if name == rsc['name']]
+        drv = int.from_bytes(rsc['props']['qcom,drv-id'], 'big')
+        tcs_off = int.from_bytes(rsc['props'].get('qcom,tcs-offset', b''), 'big')
+        rsc_base = drvs[drv] if drv < len(drvs) else None
+        check('rpmh rsc', rsc_base, mirror['RPMh RSC'])
+        check('rpmh tcs', rsc_base + tcs_off if rsc_base is not None else None, mirror['RPMh TCS'])
+    else:
+        check('rpmh rsc', first_in('mailbox', 0x18200000, 0x18300000), mirror['RPMh RSC'])
+        check('rpmh tcs', next((b for b, s in by.get('mailbox', []) if 0x18200000 <= b < 0x18300000 and b != mirror['RPMh RSC']), None),
+              mirror['RPMh TCS'])
 
     print()
     bad = 0
     for label, found, want, ok in checks:
         print(f'{"ok " if ok else "BAD"} {label:<20} found {found:<28} want {want}')
         bad += 0 if ok else 1
-    # touch bus (SE17 on guacamole is i2c@c80000; only report presence)
-    touch = [n for n in got['nodes'] if n['name'].startswith('i2c@c80000')]
+    # touch bus (only report presence)
+    bus = mirror.get('Touch bus')
+    touch = [n for n in got['nodes'] if bus and n['name'].startswith(bus)]
     if touch:
-        print(f'ok  touch bus            found {touch[0]["path"]} (SE17)')
+        print(f'ok  touch bus            found {touch[0]["path"]}')
     print(f'\n{len(checks) - bad}/{len(checks)} match')
     return 1 if bad else 0
 

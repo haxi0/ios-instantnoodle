@@ -100,6 +100,44 @@ DEVICES = {
         'memory_frequency': 2133000000,
         'bus_frequency': 100000000,
     },
+    'instantnoodle': {
+        # OnePlus 8 (instantnoodle, SM8250 "kona"). Audited against the
+        # IN2010's own live FDT on 2026-10-21 (OOS 11, slot _b; see
+        # INSTANTNOODLE.md): same three DDR banks, GIC, UFS, SPMI, IMEM,
+        # PS_HOLD and splash base as guacamole.
+        'name': 'OnePlus 8 (instantnoodle, SM8250)',
+        'board_compat': 'oneplus,instantnoodle',
+        'soc_compat': 'qcom,kona',
+        # /memory: 0x80000000+0x3bb00000, 0xc0000000+0xc0000000,
+        # 0x180000000+0x100000000 (8 GB SKU) - identical to guacamole.
+        'phys_base': 0xc0000000,
+        'mem_size': 0xc0000000,
+        'high_phys_base': 0x180000000,
+        'high_mem_size': 0x100000000,
+        'gicd': 0x17a00000,          # confirmed on the live FDT
+        'gicd_size': 0x10000,
+        'gicr': 0x17a60000,          # confirmed
+        'gicr_size': 0x100000,
+        'timebase': 19200000,
+        'vtimer_intid': 19,          # GIC_PPI 3 numbering, as on SM8150
+        # reserved-memory cont_splash_region 0x9c000000 + 0x02300000 (live
+        # FDT). Panel: Samsung ana6705 (AMB655XL), 1080x2400 DSC cmd mode.
+        'fb': 0x9c000000,
+        'fb_size': 0x2300000,
+        'fb_w': 1080,
+        'fb_h': 2400,
+        'fb_stride': 1080 * 4,
+        'ufs': 0x01d84000,           # confirmed (ufshc@1d84000, PHY 0x1d87000)
+        'ufs_size': 0x3000,
+        # Kryo 585: 4x A55 (silver) + 3x A77 (gold) + 1x A77 (prime). Max
+        # clocks read from cpufreq on the phone.
+        'cpu_compat': 'qcom,kryo585',
+        'cpus': 8,
+        'cpu_regs': [0, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700],  # confirmed (live FDT)
+        'cpu_clocks': [1804800000] * 4 + [2419200000] * 3 + [2841600000],  # confirmed (cpufreq)
+        'memory_frequency': 2750000000,                                    # verify: LPDDR5 max
+        'bus_frequency': 100000000,
+    },
 }
 
 

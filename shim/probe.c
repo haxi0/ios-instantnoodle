@@ -453,6 +453,8 @@ probe_tlmm(void)
 {
 #ifdef HOST_TEST
 	return;		/* the host renderer has no /dev/mem */
+#elif !defined(BOARD_TLMM_PA)
+	(void)0;	/* the tile map below is SM8150's */
 #else
 	volatile uint32_t *t = (volatile uint32_t *)(uintptr_t)BOARD_TLMM_PA;
 	/* SM8150 has four tile arrays inside the region; see sweet_touch_sec.c. */
@@ -492,7 +494,7 @@ probe_tlmm(void)
 #undef TLMM_CTL
 #undef TLMM_IO
 #undef TLMM_TILE
-#endif /* !HOST_TEST */
+#endif
 }
 
 /*

@@ -5,7 +5,7 @@ Only what the early boot path actually reads (see NOTES.md); every MMIO
 address comes from the device's live FDT (see tools/devices.py for the
 per-board profile).
 
-Usage:  mkadt.py OUT.adt [--device sweet|guacamole] [--dump] [--qemu] [--highmem]
+Usage:  mkadt.py OUT.adt [--device sweet|guacamole|instantnoodle] [--dump] [--qemu] [--highmem]
 """
 import hashlib, os, struct, sys
 

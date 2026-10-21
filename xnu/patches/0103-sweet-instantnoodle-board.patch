@@ -1,0 +1,433 @@
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+index 428469f..eae6d3a 100644
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -44,9 +44,9 @@ CFLAGS+= -include meta_features.h -DDRIVER_PRIVATE \
+         -Warray-bounds-pointer-arithmetic
+ SFLAGS+= -include meta_features.h
+ 
+-# This provider is built into SWEET (and its second board, GUACAMOLE);
+-# other boards use their normal kext.
+-ifneq ($(filter SWEET GUACAMOLE,$(CURRENT_MACHINE_CONFIG)),)
++# This provider is built into SWEET (and its boards GUACAMOLE and
++# INSTANTNOODLE); other boards use their normal kext.
++ifneq ($(filter SWEET GUACAMOLE INSTANTNOODLE,$(CURRENT_MACHINE_CONFIG)),)
+ SWEET_PTHREAD_ROOT = $(SRCROOT)/bsd/pthread/sweet_libpthread
+ SWEET_PTHREAD_INC = -I$(SWEET_PTHREAD_ROOT) -I$(SWEET_PTHREAD_ROOT)/private -I$(SWEET_PTHREAD_ROOT)/include
+ sweet_pthread_init.o_INCFLAGS = $(SWEET_PTHREAD_INC)
+diff --git a/config/MASTER.arm64.instantnoodle b/config/MASTER.arm64.instantnoodle
+new file mode 100644
+index 0000000..33807ff
+--- /dev/null
++++ b/config/MASTER.arm64.instantnoodle
+@@ -0,0 +1,114 @@
++#
++# instantnoodle (OnePlus 8, SM8250): the sweet port on a third board.
++# Same options as MASTER.arm64.guacamole. Per-device addresses live in
++# pexpert/pexpert/arm64/sweet_dev.h (kernel) and tools/devices.py
++# (ADT/shim); shim/boards/instantnoodle.h mirrors them.
++#
++#
++# Mach Operating System
++# Copyright (c) 1986 Carnegie-Mellon University
++# Copyright 2001-2018 Apple Inc.
++#
++# All rights reserved.  The CMU software License Agreement
++# specifies the terms and conditions for use and redistribution.
++#  
++######################################################################
++#
++#  Master Apple configuration file (see the master machine independent
++#  configuration file for a description of the file format).
++#
++######################################################################
++#  
++#  Standard Apple OS Configurations:
++#  -------- ----- -- ---------------
++#
++#  KERNEL_BASE =    [ arm64 config_pmap_ppl medium msgb_large config_requires_u32_munging config_delay_idle_sleep config_proc_udata_storage config_uexc config_darkboot nos_arm_asm nos_arm_pmap ]
++#  KERNEL_RELEASE = [ KERNEL_BASE ]
++#  KERNEL_DEV =     [ KERNEL_BASE development mach_assert config_xnupost proc_ref_debug config_proc_resource_limits ]
++#  KERNEL_DEBUG =   [ KERNEL_BASE debug mach_assert config_xnupost config_waitq_stats config_workloop_debug config_proc_resource_limits ]
++#  BSD_BASE =       [ mach_bsd sysv_sem sysv_msg sysv_shm config_netboot config_imageboot psynch config_proc_uuid_policy config_coredump pgo config_personas ]
++#  BSD_RELEASE =    [ BSD_BASE ]
++#  BSD_DEV =        [ BSD_BASE config_vnguard ]
++#  BSD_DEBUG =      [ BSD_BASE config_vnguard ]
++#  FILESYS_BASE =   [ devfs fdesc fifo mockfs sweet_hfs fs_compression config_protect config_mnt_rootsnap config_rosv_startup config_mount_vm config_mount_prebootrecovery config_basesystemroot config_fse quota namedstreams config_imgsrc_access config_triggers config_searchfs config_volfs config_appledouble nullfs bindfs config_mnt_suid config_firmlinks config_dataless_files config_union_mounts config_file_leases ]
++#  FILESYS_RELEASE= [ FILESYS_BASE ]
++#  FILESYS_DEV =    [ FILESYS_BASE config_iocount_trace ]
++#  FILESYS_DEBUG =  [ FILESYS_BASE config_iocount_trace ]
++#  NFS =            [ nfsserver ]
++#  SKYWALK_BASE =   [ skywalk config_nexus_user_pipe config_nexus_kernel_pipe config_nexus_monitor config_nexus_flowswitch config_nexus_netif ]
++#  SKYWALK_RELEASE = [ SKYWALK_BASE ]
++#  SKYWALK_DEV =    [ SKYWALK_BASE ]
++#  SKYWALK_DEBUG =  [ SKYWALK_BASE ]
++#  NETWORKING =     [ inet bpfilter dummynet traffic_mgt sendfile ah_all_crypto bond vlan gif stf ifnet_input_chk config_mbuf_jumbo if_bridge MULTIPATH if_fake remote_vif ]
++#  NETWORKING_RELEASE = [ NETWORKING ]
++#  NETWORKING_DEV = [ NETWORKING_RELEASE packet_mangler if_headless ]
++#  NETWORKING_DEBUG = [ NETWORKING_DEV ]
++#  VPN =            [ ipsec flow_divert necp content_filter ]
++#  PF =             [ pf pflog ]
++#  MULTIPATH =      [ multipath mptcp ]
++#if SOC_CONFIG_t8020 || SOC_IS_VIRTUALIZED
++#  HIBERNATION =    [ ]
++#else /*!(SOC_CONFIG_t8020 || SOC_IS_VIRTUALIZED)*/
++#  HIBERNATION =    [ ]
++#endif /*SOC_CONFIG_t8020 || SOC_IS_VIRTUALIZED*/
++#  IOKIT_BASE =     [ iokit iokitcpp no_kernel_hid config_sleep iokitstats HIBERNATION ]
++#  IOKIT_RELEASE =  [ IOKIT_BASE ]
++#  IOKIT_DEV =      [ IOKIT_BASE iotracking ]
++#  IOKIT_DEBUG =    [ IOKIT_BASE iotracking ]
++#  LIBKERN_BASE =   [ libkerncpp config_blocks config_kec_fips crypto_sha2 config_img4 ]
++#  LIBKERN_RELEASE =[ LIBKERN_BASE zlib ]
++#  LIBKERN_DEV =    [ LIBKERN_BASE zlib iotracking ]
++#  LIBKERN_DEBUG =  [ LIBKERN_BASE zlib iotracking ]
++#  PERF_DBG_BASE =  [ config_dtrace mach_kdp config_serial_kdp kdp_interactive_debugging config_kdp_coredump_encryption config_pervasive_energy PERFMON_BASE kperf kpc ]
++#  PERF_DBG_RELEASE=[ PERF_DBG_BASE ist_kdebug ]
++#  PERF_DBG_DEV =   [ PERF_DBG_BASE lock_stats zleaks alternate_debugger sched_hygiene_debug config_debug_syscall_rejection config_iotrace ]
++#  PERF_DBG_DEBUG = [ PERF_DBG_BASE lock_stats zleaks alternate_debugger sched_hygiene_debug config_debug_syscall_rejection config_iotrace ]
++#if SOC_IS_VIRTUALIZED
++#  PARAVIRT_BASE =  [ config_pv_ticket ]
++#else
++#  PARAVIRT_BASE =  [ ]
++#endif /*SOC_IS_VIRTUALIZED*/
++#  MACH_BASE =      [ mach config_ecc_logging vc_progress_white importance_inheritance config_atm config_coalitions config_iosched config_sysdiagnose config_telemetry config_mach_bridge_recv_time config_quiesce_counter config_arm_pfz config_user_notification phys_write_acct config_service_port_info config_voucher_deprecated PARAVIRT_BASE config_ledger_interval_max ]
++#  MACH_RELEASE =   [ MACH_BASE ]
++#  MACH_DEV =       [ MACH_BASE config_io_accounting importance_trace ]
++#  MACH_DEBUG =     [ MACH_BASE config_io_accounting importance_trace importance_debug ]
++#  SCHED_BASE =     [ config_sched_traditional config_sched_multiq config_sched_deferred_ast config_clutch config_sched_sfi config_sched_auto_join config_preadopt_tg ]
++#  SCHED_RELEASE =  [ SCHED_BASE ]
++#  SCHED_DEV =      [ SCHED_BASE ]
++#  SCHED_DEBUG =    [ SCHED_BASE config_sched_grrr config_sched_proto ]
++#  VM_BASE =        [ vm_pressure_events memorystatus config_code_decryption encrypted_swap config_deferred_reclaim ]
++#  VM_RELEASE =     [ VM_BASE ]
++#  VM_DEV =         [ VM_BASE dynamic_codesigning pgzalloc ]
++#  VM_DEBUG =       [ VM_BASE dynamic_codesigning pgzalloc ]
++#  VM_KASAN =       [ VM_BASE dynamic_codesigning config_kasan config_ubsan config_kcov config_ksancov kernel_tbi ]
++#  SECURITY =       [ config_macf config_audit kernel_integrity config_csr config_csr_from_dt config_setuid config_kas_info config_secure_bsd_root config_arcade config_supplemental_signatures second_static_trust_cache reslide_shared_cache ]
++#  BASE =           [ PF VPN SECURITY NFS ]
++#  RELEASE =        [ BASE KERNEL_RELEASE BSD_RELEASE FILESYS_RELEASE SKYWALK_RELEASE NETWORKING_RELEASE IOKIT_RELEASE LIBKERN_RELEASE    PERF_DBG_RELEASE MACH_RELEASE SCHED_RELEASE VM_RELEASE ]
++#  DEVELOPMENT =    [ BASE KERNEL_DEV     BSD_DEV     FILESYS_DEV     SKYWALK_DEV     NETWORKING_DEV     IOKIT_DEV     LIBKERN_DEV        PERF_DBG_DEV     MACH_DEV     SCHED_DEV     VM_DEV     ]
++#  DEBUG =          [ BASE KERNEL_DEBUG   BSD_DEBUG   FILESYS_DEBUG   SKYWALK_DEBUG   NETWORKING_DEBUG   IOKIT_DEBUG   LIBKERN_DEBUG      PERF_DBG_DEBUG   MACH_DEBUG   SCHED_DEBUG   VM_DEBUG   ]
++#  KASAN =          [ BASE KERNEL_DEV     BSD_DEV     FILESYS_DEV     SKYWALK_DEV     NETWORKING_DEV     IOKIT_DEV     LIBKERN_DEV        PERF_DBG_DEV     MACH_DEV     SCHED_DEV     VM_KASAN   ]
++#
++######################################################################
++#
++machine		"arm64"						# <arm64>
++
++makeoptions	OSFMK_MACHINE = "arm64"				# <mach>
++
++options		COUNT_SYSCALLS		# count bsd system calls 	# <countcalls>
++options     TRASH_VFP_ON_SAVE   # <debug,trash_vfp>
++options		ALTERNATE_DEBUGGER	# <alternate_debugger>
++
++options   CONFIG_VNODES=1024		# <xsmall>
++
++options   CONFIG_FREEZE_SUSPENDED_MIN=4		# <xsmall>
++
++options	  CONFIG_MACH_APPROXIMATE_TIME
++
++options   CONFIG_KERNEL_INTEGRITY		# <kernel_integrity>
++
++options CONFIG_MACF_LAZY_VNODE_LABELS   # Turn on labels, don't preallocate
++
++options CONFIG_HYPERVISOR_PUBLIC   # unrestricted entitlement for hypervisor
++
++options   CONFIG_RESLIDE_SHARED_CACHE		# <reslide_shared_cache>
++options   CONFIG_KERNEL_TBI		# <kernel_tbi>
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index bc93771..0bf9238 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -35,7 +35,20 @@
+ const char * gIOKernelConfigTables =
+     "("
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-#if defined(ARM64_BOARD_CONFIG_GUACAMOLE)
++#if defined(ARM64_BOARD_CONFIG_INSTANTNOODLE)
++    "   {"
++    "     'IOClass'         = SweetPlatformExpert;"
++    "     'IOProviderClass' = IOPlatformExpertDevice;"
++    "     'IONameMatch'     = 'oneplus,instantnoodle';"
++    "     'IOProbeScore'    = 10000:32;"
++    "   },"
++    "   {"
++    "     'IOClass'         = SweetCPU;"
++    "     'IOProviderClass' = IOPlatformDevice;"
++    "     'IONameMatch'     = 'qcom,kryo585';"
++    "     'IOProbeScore'    = 10000:32;"
++    "   },"
++#elif defined(ARM64_BOARD_CONFIG_GUACAMOLE)
+     "   {"
+     "     'IOClass'         = SweetPlatformExpert;"
+     "     'IOProviderClass' = IOPlatformExpertDevice;"
+diff --git a/libkern/conf/Makefile.template b/libkern/conf/Makefile.template
+index f20b12d..3523070 100644
+--- a/libkern/conf/Makefile.template
++++ b/libkern/conf/Makefile.template
+@@ -19,8 +19,8 @@ include $(MakeInc_def)
+ CFLAGS+= -include meta_features.h -DLIBKERN_KERNEL_PRIVATE -DOSALLOCDEBUG=1
+ SFLAGS+= -include meta_features.h
+ 
+-# The portable crypto provider is built into SWEET and GUACAMOLE.
+-ifneq ($(filter SWEET GUACAMOLE,$(CURRENT_MACHINE_CONFIG)),)
++# The portable crypto provider is built into SWEET, GUACAMOLE and INSTANTNOODLE.
++ifneq ($(filter SWEET GUACAMOLE INSTANTNOODLE,$(CURRENT_MACHINE_CONFIG)),)
+ SWEET_AES_ROOT = $(SRCROOT)/libkern/crypto/sweet_bearssl
+ SWEET_AES_INC = -I$(SWEET_AES_ROOT)/inc -I$(SWEET_AES_ROOT)/src
+ sweet_aes.o_INCFLAGS = $(SWEET_AES_INC)
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 257cc65..628c652 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -29,7 +29,7 @@ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else ifneq ($(findstring _host,$(RC_ProjectName)),)
+ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else
+-SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 T8103 VMAPPLE SWEET GUACAMOLE
++SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 T8103 VMAPPLE SWEET GUACAMOLE INSTANTNOODLE
+ 
+ endif
+ 
+@@ -66,6 +66,8 @@ MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=arm
+ # ARM64_BOARD_CONFIG_SWEET; a GUACAMOLE build defines it as well and reads
+ # its per-board numbers from pexpert/pexpert/arm64/sweet_dev.h.
+ MACHINE_FLAGS_ARM64_GUACAMOLE = -DARM64_BOARD_CONFIG_GUACAMOLE -DARM64_BOARD_CONFIG_SWEET -march=armv8.2-a+crypto
++# OnePlus 8 (SM8250): same scheme, its own block in sweet_dev.h.
++MACHINE_FLAGS_ARM64_INSTANTNOODLE = -DARM64_BOARD_CONFIG_INSTANTNOODLE -DARM64_BOARD_CONFIG_SWEET -march=armv8.2-a+crypto
+ 
+ 
+ #
+@@ -265,8 +267,8 @@ ifeq ($(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG),)
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
+ ifneq ($(filter arm64,$(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG)),)
+ # sweet's Cortex-A76/A55 have no pointer authentication: stay plain arm64
+-# (empty filter = the config is neither SWEET nor GUACAMOLE -> arm64e)
+-ifeq ($(filter SWEET GUACAMOLE,$(CURRENT_MACHINE_CONFIG)),)
++# (empty filter = the config is not a sweet-port board -> arm64e)
++ifeq ($(filter SWEET GUACAMOLE INSTANTNOODLE,$(CURRENT_MACHINE_CONFIG)),)
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
+ endif
+ endif
+diff --git a/pexpert/pexpert/arm64/INSTANTNOODLE.h b/pexpert/pexpert/arm64/INSTANTNOODLE.h
+new file mode 100644
+index 0000000..5b2b7be
+--- /dev/null
++++ b/pexpert/pexpert/arm64/INSTANTNOODLE.h
+@@ -0,0 +1,82 @@
++/*
++ * Board config for the OnePlus 8 ("instantnoodle", Qualcomm SM8250 /
++ * Snapdragon 865): Kryo 585 = 4x Cortex-A55 + 4x Cortex-A77, ARMv8.2,
++ * no PAC. Same platform class as sweet (SM7150): generic ARM, 16K pages,
++ * GICv3 with two security states (every interrupt, including the timer,
++ * is a Group 1 IRQ taken through sleh_irq()).
++ *
++ * Per-device addresses (framebuffer, SPMI, RPMh, USB) live in
++ * pexpert/pexpert/arm64/sweet_dev.h, not here.
++ */
++
++#ifndef _PEXPERT_ARM64_INSTANTNOODLE_H
++#define _PEXPERT_ARM64_INSTANTNOODLE_H
++
++#define NO_MONITOR                1
++#define NO_ECORE                  1
++
++#define SWEET                     1
++
++/*
++ * All eight cores (four A55 + four A77, Kryo 585) as one homogeneous SMP
++ * cluster: cpus=N is clamped here. PSCI CPU_ON, 64-byte lines; the
++ * scheduler does not know the A77s are faster (no AMP/P-E clusters yet).
++ */
++#define SWEET_SMP_MAX_CPUS         8
++
++#define ARM_ARCH_TIMER
++#define __ARM_ARCH__              8
++#define __ARM_VMSA__              8
++#define __ARM_VFP__               4
++#define __ARM_COHERENT_CACHE__    1
++#define __ARM_DEBUG__             7
++#define __ARM_ENABLE_SWAP__       1
++#define __ARM_V8_CRYPTO_EXTENSIONS__ 1
++#define __ARM_PAN_AVAILABLE__     1
++#define __ARM_16K_PG__            1
++
++#define HAS_GIC_V3                1
++
++#ifndef ASSEMBLER
++#define PLATFORM_PANIC_LOG_DISABLED
++#endif /* ! ASSEMBLER */
++
++/*
++ * Qualcomm PPI numbering (secure phys, phys, virt, hyp = 1/2/3/0) instead
++ * of the usual 13/14/11/10: the virtual timer XNU uses (CNTV) is 16+3.
++ * Must match the virtual-timer-intid the ADT publishes for /gic.
++ */
++#define SWEET_VTIMER_INTID        19
++#define SWEET_IPI_SGI             1       // SGI used for cross-CPU signals
++
++#define GIC_SPURIOUS_IRQ          1023    // IRQ no. for GIC spurious interrupt
++
++#define GICR_PE_SIZE              0x20000 // Size of each redistributor region
++
++/* GICv3 register definitions; see GICv3 spec (Arm IHI 0069G) */
++#define GICD_CTLR                 0x0
++
++/* Non-secure view of GICD_CTLR (DS=0) */
++#define GICD_CTLR_ENABLEGRP1      0x1
++#define GICD_CTLR_ENABLEGRP1A     0x2
++#define GICD_CTLR_ARE_NS          0x10
++#define GICD_CTLR_RWP             0x80000000
++
++#define GICR_TYPER                              0x08
++#define GICR_WAKER                              0x14
++#define GICR_IGROUPR0                           0x10080
++#define GICR_ISENABLER0                         0x10100
++#define GICR_IPRIORITYR0                        0x10400
++
++#define GICR_TYPER_AFFINITY_VALUE_SHIFT         32
++#define GICR_TYPER_LAST                         0x10
++
++#define GICR_WAKER_PROCESSORSLEEP               0x2
++#define GICR_WAKER_CHILDRENASLEEP               0x4
++
++#define ICC_CTLR_EOIMODE                        0x2
++
++#define ICC_SRE_SRE                             0x1
++/* End of GICv3 register definitions */
++
++#endif /* ! _PEXPERT_ARM64_INSTANTNOODLE_H */
+diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
+index 1d300e1..b293796 100644
+--- a/pexpert/pexpert/arm64/Makefile
++++ b/pexpert/pexpert/arm64/Makefile
+@@ -20,6 +20,7 @@ PRIVATE_KERNELFILES = \
+ 	BCM2837.h \
+ 	SWEET.h \
+ 	GUACAMOLE.h \
++	INSTANTNOODLE.h \
+ 	sweet_dev.h
+ 
+ 
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index 121d6c5..7876f72 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -119,6 +119,17 @@
+ 
+ #endif  /* ARM64_BOARD_CONFIG_GUACAMOLE */
+ 
++#ifdef ARM64_BOARD_CONFIG_INSTANTNOODLE
++#include <pexpert/arm64/INSTANTNOODLE.h>
++
++#define MAX_L2_CLINE                   6
++#define MAX_CPUS                       8
++#define MAX_CPU_CLUSTERS               1
++
++#define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
++
++#endif  /* ARM64_BOARD_CONFIG_INSTANTNOODLE */
++
+ #if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_GUACAMOLE)
+ #include <pexpert/arm64/sweet_dev.h>
+ #endif
+diff --git a/pexpert/pexpert/arm64/sweet_dev.h b/pexpert/pexpert/arm64/sweet_dev.h
+index 0b7870b..283bcfc 100644
+--- a/pexpert/pexpert/arm64/sweet_dev.h
++++ b/pexpert/pexpert/arm64/sweet_dev.h
+@@ -5,6 +5,7 @@
+  * Per-device hardware constants for the sweet XNU port.
+  *
+  * One block per board, selected by the machine config:
++ *   INSTANTNOODLE  OnePlus 8 (SM8250):  -DARM64_BOARD_CONFIG_INSTANTNOODLE
+  *   GUACAMOLE  OnePlus 7 Pro (SM8150):  -DARM64_BOARD_CONFIG_GUACAMOLE
+  *   SWEET      Redmi Note 10 Pro (SM7150): default
+  *
+@@ -19,7 +20,69 @@
+  * "sweet port", not "sweet phone": per-board numbers live here.
+  */
+ 
+-#if defined(ARM64_BOARD_CONFIG_GUACAMOLE)
++#if defined(ARM64_BOARD_CONFIG_INSTANTNOODLE)
++
++/* ------------- OnePlus 8 (instantnoodle, SM8250) ------------- */
++
++/* Values from the IN2010's own live FDT (2026-10-21, INSTANTNOODLE.md);
++ * tools/fdt-audit.py --device instantnoodle checks them. */
++#define SWEET_DEV_NAME          "instantnoodle"
++
++/* ABL continuous-splash framebuffer: cont_splash_region 0x9c000000 +
++ * 0x02300000. Panel: Samsung ana6705, 1080x2400 DSC cmd mode, a8r8g8b8. */
++#define SWEET_DEV_FB_PA         0x9c000000UL
++#define SWEET_DEV_FB_W          1080
++#define SWEET_DEV_FB_H          2400
++#define SWEET_DEV_FB_STRIDE     (SWEET_DEV_FB_W * 4)
++
++/* SPMI arbiter at 0xc440000, same regs as SM8150. PM8150 is SID 0 (PON at
++ * 0x800, gpio-keys on its GPIO block at 0xc000). */
++#define SWEET_DEV_SPMI_CORE_PA  0x0c440000u
++#define SWEET_DEV_SPMI_OBS_PA   0x0e600000u
++#define SWEET_DEV_SPMI_CFG_PA   0x0c40a000u
++#define SWEET_DEV_PON_RT        0x0810u          /* PON RT_STS (PON base 0x800 + 0x10) */
++
++/* Keys: gpio-keys in the live tree are PM8150 GPIO6 (volume up) and GPIO7
++ * (volume down), active low - the guacamole layout. The driver checks the
++ * pin config ABL left behind and withholds an unconfigured pin. */
++#define SWEET_DEV_KEYS_VOLUME   1
++#define SWEET_DEV_VOL_GPIO_RT   0xc510u         /* volume up: PM8150 GPIO6 */
++#define SWEET_DEV_VOL_GPIO2_RT  0xc610u         /* volume down: PM8150 GPIO7 */
++#define SWEET_DEV_VOL_GPIO_SID  0               /* PM8150 */
++#define SWEET_DEV_VOL_DOWN_PON  0               /* volume-down is a GPIO here */
++
++/* RPMh: rsc@18200000 "apps_rsc", qcom,drv-id 2 -> DRV-2 at 0x18220000,
++ * qcom,tcs-offset 0xd00. The command DB is reserved-memory@80860000 in the
++ * live tree; the AOP locator word at 0xc3f000c is assumed as on SM8150 and
++ * is only read by the touch rail vote (VERIFY before touch bring-up). */
++#define SWEET_DEV_RPMH_RSC_PA   0x18220000u
++#define SWEET_DEV_RPMH_TCS_PA   0x18220d00u
++#define SWEET_DEV_RPMH_TCS_SIZE 0x3000u
++#define SWEET_DEV_RPMH_DICT_PA  0x0c3f000cu      /* VERIFY */
++
++/* Touch: Samsung S6SY761 ("SY771") @0x48 on i2c@a94000, reset tlmm 38,
++ * IRQ tlmm 39, vdd pm8150_l13 ("ldoa13", 3.008 V), vcc pm8150a_l1
++ * ("ldoc1", 1.8 V). Off until sweet_touch_sec.c learns the SM8250 TLMM
++ * tiles (pinctrl@f000000) and the second rail. */
++#define SWEET_DEV_TOUCH         0
++#define SWEET_DEV_TOUCH_SEC     0
++#define SWEET_DEV_TOUCH_VREG_NAME "ldoa13"
++#define SWEET_DEV_TOUCH_VREG_MV 3008
++
++/* USB: usb0 = dwc3@a600000, HS PHY hsphy@88e3000 (not 0x88e2000 as on
++ * SM8150), QMP ssphy@88e8000. Off until the SM8250 GCC offsets are filled
++ * in; sweet_usb.c compiles out. */
++#define SWEET_DEV_USB           0
++#define SWEET_DEV_USB_ARM_ON_EVENT 1
++#define SWEET_DEV_USB_VBUS_DEFAULT 3
++/* Reset-surviving scratch (DRAM, kernel high bank 0x180000000 + 0x18000000). */
++#define SWEET_DEV_MARK_PA       0x198000000UL
++
++/* Panel physical size in mm (ana6705 node: 70 x 151). */
++#define SWEET_DEV_PANEL_MM_W    70
++#define SWEET_DEV_PANEL_MM_H    151
++
++#elif defined(ARM64_BOARD_CONFIG_GUACAMOLE)
+ 
+ /* ------------- OnePlus 7 Pro (guacamole, SM8150) ------------- */
+ 
+@@ -119,7 +182,7 @@
+ #define SWEET_DEV_PANEL_MM_W    76
+ #define SWEET_DEV_PANEL_MM_H    163
+ 
+-#else /* !ARM64_BOARD_CONFIG_GUACAMOLE -> sweet */
++#else /* neither INSTANTNOODLE nor GUACAMOLE -> sweet */
+ 
+ /* ------------- Redmi Note 10 Pro (sweet, SM7150) ------------- */
+ 
+@@ -178,6 +241,6 @@
+ #define SWEET_DEV_PANEL_MM_W    68
+ #define SWEET_DEV_PANEL_MM_H    151
+ 
+-#endif /* ARM64_BOARD_CONFIG_GUACAMOLE */
++#endif /* board */
+ 
+ #endif /* !_PEXPERT_ARM64_SWEET_DEV_H */
