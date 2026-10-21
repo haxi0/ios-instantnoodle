@@ -20,13 +20,20 @@ mkdir -p logs
 
 stamp() { date +%H:%M:%S; }
 bootloader_ready() { [ "$(timeout 5 fastboot getvar product 2>&1 | awk '/^product:/{print $2}')" = kona ]; }
+# The OnePlus 8's ABL only attaches to USB on a fresh cable insertion: after
+# a reboot with the cable in, the PC never sees it. Ask for a replug.
 wait_bootloader() {    # $1 = seconds
-	local end=$((SECONDS + $1))
+	local end=$((SECONDS + $1)) asked=0
 	until bootloader_ready; do
-		[ $SECONDS -lt $end ] || { echo "$(stamp) no answering bootloader (replug the cable?)" >&2; return 1; }
+		[ $SECONDS -lt $end ] || { echo "$(stamp) no answering bootloader" >&2; return 1; }
+		if [ $asked = 0 ] && ! lsusb_phone; then
+			echo "$(stamp) >>> REPLUG THE USB CABLE when the phone shows the fastboot screen <<<" >&2
+			asked=1
+		fi
 		sleep 3
 	done
 }
+lsusb_phone() { grep -qilE '18d1|2a70' /sys/bus/usb/devices/*/idVendor 2>/dev/null; }
 
 python3 tools/mkadt.py shim/out/instantnoodle.adt --device instantnoodle --highmem >/dev/null
 python3 tools/mkpayload.py "$kernel" shim/out/instantnoodle.adt "shim/out/payload-$name.bin" \
