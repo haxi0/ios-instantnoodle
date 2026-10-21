@@ -55,7 +55,27 @@
   `mount(3)`..`mount(10)`. Expected: `userdata` is still Android. Note: with
   `ufsrw=1` the sweetlog ring writes the last ~4 MiB of `userdata`, so
   Android's userdata tail is no longer intact (wipe approved 2026-10-21).
-- **Next:** iOS root image into `userdata` (`tools/mkiosroot.sh`, needs sudo), then `cpus=8`. **Not done yet:**
+- **iOS root flashed (2026-10-22 01:05-01:10).** `research/ios16-root.simg`
+  (16G HFS+, 12G used, Setup skipped by `sweet-root-tweaks.py`; built with
+  the fixed `mkiosroot.sh` fsck path) -> `fastboot flash userdata`, 16/16
+  sparse chunks OKAY, 339 s. The `fastboot boot` right after the flash hung
+  in "Sending" (bootloader stopped answering); Power+VolDown + USB replug
+  recovered it. Replug is often needed after ABL re-enters fastboot here.
+- **Userland boots, SpringBoard stalls at the Apple logo.** Boots:
+  01:15 `noodle-k0103-vt27.img` (cpus=1, console): root mounts, launchd,
+  backboardd[56], SpringBoard[26], bluetoothd/fairplayd.H2 relaunch loop
+  (expected); user saw the Apple logo (drawn by iOS) before the console
+  overdrew it. 01:22 `noodle-k0103-cpus8-nocon.img` (cpus=8,
+  sweetfb_noconsole=1): Apple logo for 13+ min, nothing else. 01:37
+  `noodle-k0103-cpus8-con.img` (cpus=8, console): same picture - same pids
+  (no crash loop), sampler shows backboardd/SpringBoard threads parked at
+  the same pcs (waiting in mach_msg), only xpcproxy/fairplayd.H2/bluetoothd
+  exec lines. `config_personas` is present (the guacamole Apple-logo cause),
+  so this is something else. NEXT: pull the sweetlog ring (last 4 MiB of
+  userdata) from a recovery with adb root (OnePlus 8 TWRP/OrangeFox via
+  `fastboot boot`, not flashed) and look for the service SpringBoard waits
+  on; do not leave the console on for hours (AMOLED burn-in).
+- **Not done yet:**
   upstream ios-sweet's 4 newer commits (`1664d63` mkadt `/pram` panic region,
   `4c7cc91` site, `4274e51` validator, `6838e1d` qemu runner) not merged.
 
