@@ -95,6 +95,19 @@
   sweetreset=SECS), boots it, waits for the reset, boots TWRP, pulls
   `logs/NAME.txt` and reboots to fastboot. CI now defaults
   `machine_config` to INSTANTNOODLE (`5af3250`).
+- **Apple-logo "stall" explained (2026-10-22 02:35, `logs/noodle-mig1.txt`
+  7 min, `logs/noodle-mig2.txt` 20 min, both fully unattended with 0104).**
+  SpringBoard main-thread samples (mapped to images with a small script over
+  `research/dyld/` copied from the SystemOS cryptex; `ipsw dyld a2s` hangs
+  on this host): samples 1-7 (~first 15 min) blocked on a lock in
+  CoreServices (LaunchServices) called from ControlCenterServices <-
+  BaseBoard - the first boot on a freshly flashed root rebuilds the LS
+  database. Sample 8 on: `UIApplicationMain` -> GraphicsServices ->
+  CFRunLoop -> mach_msg, i.e. SpringBoard up and idle. backboardd sent
+  `SWEET FB: display off` (IOMFB sel 12) before that, so only 4 swaps (the
+  Apple logo) ever reached the panel and the lock screen was never drawn.
+  The LS database persists in userdata, so warm boots should be faster;
+  waking the display needs the power key (HID path verified).
 - **Not done yet:**
   upstream ios-sweet's 4 newer commits (`1664d63` mkadt `/pram` panic region,
   `4c7cc91` site, `4274e51` validator, `6838e1d` qemu runner) not merged.
