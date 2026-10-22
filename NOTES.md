@@ -152,6 +152,29 @@
   the IC reports touches anyway (1649 events, 45 presses, 36 I2C errors in
   5 min). Probably the SY771 firmware senses by default after reset; only
   revisit if touch stops after a display off/on.
+- **HackiOS ports (2026-10-22, https://github.com/oosexgang/hackios-xnu-kernel,
+  reference clone in `../hackios-ref/`, credited in README).**
+  - **0107 CPU clocks (EPSS, from `redwood_cpufreq.c`) WORK** (run `cpufreq1`,
+    kernel `xnu/out-0107` CI 39783273608, `membench=1`): domain 0 row 13 ->
+    16 = 1804 MHz, domain 1 row 0 -> 17 = 2419 MHz, domain 2 row 0 -> 19 =
+    2841 MHz (ABL left the big cores at their lowest row). Lock screen as
+    before. One new `mediaserverd` SIGABRT in this run (not seen before; maybe
+    a race the faster cores expose) - watch it. Default on, `cpufreq=0` off.
+    Their DDR bandwidth vote (`ddr=`) is not ported: it writes RPMh TCS0
+    directly and would race `sweet_rpmh.c`; port it through sweet_rpmh.
+  - **0108 GPU phase A** (`sweet_adreno.c` from `redwood_adreno.c`, steps
+    1-10, `adreno=N`, default off): SM8250 values checked against the live
+    FDT, gpucc-sm8250.c, gcc-sm8250.c and OnePlus debugcc-kona.c (GCC debug
+    mux sel 0x163, xo/4 at 0x4300c, GPUCC selects ahb 0x10 / cx_gmu 0x18 /
+    cxo 0x19). No hub/cb clocks and no cx_misc on kona; SMMU block 0x10000.
+    Not run on the phone yet: start with `adreno=3` (reads only), then 4, 5...
+  - Firmware for the next phases, from the phone's own backup (gitignored):
+    `research/fw/gpu/a650_{gmu.bin,sqe.fw,zap.*}` (vendor_a in super.img),
+    `research/fw/qca6390/{amss20.bin,m3.bin,bdwlan.*}` (modem_b image/qca6390).
+  - Phase B (their steps 11-22: TrustZone/zap, GMU firmware via the payload
+    RAM disk as guacamole's stage 7, HFI, 3D core power, CP ring, frame) and
+    the RedwoodGPU client + Mesa/eagl userland come after phase A checks out.
+    Wi-Fi: their stack is WCN6750/ath11k-AHB; QCA6390 needs PCIe + MHI first.
 - **NEXT SESSION (start here):** 1) look at the phone; if it shows the
   fastboot screen, replug the cable and run
   `tools/noodle-run.sh noodle-warm4 600` with
