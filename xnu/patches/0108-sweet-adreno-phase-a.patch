@@ -1,0 +1,1013 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index f6265e0..8dc3940 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -114,6 +114,7 @@ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
+ bsd/dev/sweet_cpufreq.c			standard
++bsd/dev/sweet_adreno.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/bsd/dev/sweet_adreno.c b/bsd/dev/sweet_adreno.c
+new file mode 100644
+index 0000000..ec5820a
+--- /dev/null
++++ b/bsd/dev/sweet_adreno.c
+@@ -0,0 +1,959 @@
++/*
++ * SWEET: Adreno 650 (SM8250, OnePlus 8) bring-up, step by step.
++ *
++ * Ported from HackiOS by OOSEX GANG (https://github.com/oosexgang/hackios-xnu-kernel,
++ * xnu/files/bsd/dev/redwood_adreno.c, APSL 2.0), which brings up the Adreno 642L of the
++ * SC7280/SM7325 under Qualcomm's hypervisor. This is phase A: their steps 1-10 (reads,
++ * the CX power switch, the GMU/SMMU clocks, the first GMU/RSCC/SMMU reads and the GMU
++ * memory test), with SM8250 values. Their steps 11-22 (TrustZone, zap shader, GMU
++ * firmware and HFI, 3D core power, CP ring, first frame) and the RedwoodGPU client
++ * follow once these are verified on the phone.
++ *
++ * Nothing here runs unless boot-arg adreno=N asks for steps 1..N. A step says what it
++ * is about to touch before it touches it (an access the hypervisor dislikes resets the
++ * phone, often silently); the log ring is flushed after every announcement and the step
++ * waits adreno_pause ms (default 2500) so the line is on disk before the access.
++ *
++ *   adreno=N           perform steps 1..N
++ *   adreno_only=K      step K alone
++ *   adreno_skip=MASK   leave out steps whose bit is set (bit 2 = step 2)
++ *   adreno_pause=MS    wait after each announcement of the newest step
++ *   adreno_fine=1      wait before every single access of the newest step
++ *
++ * SM8250 values (all checked against the live FDT and Linux sources):
++ *   GCC GPU branches 0x71004/0x7100c/0x71018/0x71154 and the GPLL0 votes 0x52000
++ *   BIT(15)/BIT(16): gcc-sm8250.c, identical to SC7280.
++ *   GPUCC (clock-controller@3d90000): gpucc-sm8250.c - CX GDSC 0x106c (hw_ctrl 0x1540),
++ *   GX GDSC 0x100c, gmu_clk_src 0x1120 (source 6 = GPLL0 div), ahb 0x1078, cx_gmu 0x1098,
++ *   cxo 0x109c, cxo_aon 0x1004, gx_gmu 0x1064, smmu vote 0x5000. SM8250 has no hub
++ *   clock and no cb clock (SC7280-only), so those are left out.
++ *   Frequency counter: debugcc-kona.c - GCC mux 0x62000 select 0x163 for GPUCC, xo/4
++ *   0x4300c (not SC7280's 0x6200c), GPUCC mux 0x1568 with ahb 0x10, cx_gmu 0x18,
++ *   cxo_aon 0xa, cxo 0x19, gx_gmu 0xf, gx_gfx3d 0xb.
++ *   GMU 0x3d6a000 (0x30000), RSCC 0x3de0000, GBIF 0x3d0f000: live FDT qcom,gmu@3d6a000
++ *   and qcom,kgsl-3d0@3d00000 reg-names. Kona has no "cx_misc" region: not read.
++ *   SMMU kgsl-smmu@3da0000 is 0x10000 long here (SC7280: 0x20000).
++ *   Speed bin: qfprom 0x784000 + 0x19b bits 5..7 (live FDT gpu_speed_bin@19b).
++ */
++#include <pexpert/arm64/sweet_dev.h>
++
++#if defined(ARM64_BOARD_CONFIG_INSTANTNOODLE)
++#include <kern/clock.h>
++#include <libkern/libkern.h>
++#include <mach/mach_types.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <sys/systm.h>
++#include <vm/vm_kern.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
++extern void sweet_log_kick(void);
++void sweet_adreno_init(void);
++
++static uint32_t last_step, skip_steps, pause_ms = 2500, fine;
++static uint32_t step;                   /* the one being performed */
++static uint32_t newest_step;            /* the highest one asked for: the one not yet seen to work */
++static bool quiet;
++static bool cx_ours;                    /* step 4 switched CX on: switched off again at the end */
++
++static void
++sleep_us(uint32_t us)
++{
++	delay_for_interval(us, NSEC_PER_USEC);
++}
++
++static void
++sleep_ms(uint32_t ms)
++{
++	delay_for_interval(ms, NSEC_PER_MSEC);
++}
++
++/* ---- register access ------------------------------------------------------------------------------- */
++
++/*
++ * One plain load or store of a general register: some of this (the SMMU's global registers)
++ * is the hypervisor's emulation, which only handles the simplest instruction forms.
++ */
++static uint32_t __attribute__((noinline))
++rd(vm_offset_t address)
++{
++	uint32_t value;
++
++	__asm__ volatile ("ldr %w0, [%1]" : "=r" (value) : "r" (address) : "memory");
++	return value;
++}
++
++static uint32_t __attribute__((noinline))
++rd8(vm_offset_t address)
++{
++	uint32_t value;
++
++	__asm__ volatile ("ldrb %w0, [%1]" : "=r" (value) : "r" (address) : "memory");
++	return value;
++}
++
++static void __attribute__((noinline))
++wr(vm_offset_t address, uint32_t value)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r" (value), "r" (address) : "memory");
++}
++
++struct block {
++	const char *name;
++	uint32_t phys, size;
++	vm_offset_t base;
++};
++
++static void
++need(struct block *b)
++{
++	if (b->base == 0) {
++		b->base = ml_io_map(b->phys, b->size);
++	}
++}
++
++/* Get the line to disk before the access it announces (a silent reset keeps only what was flushed). */
++static void
++hold(bool single_access)
++{
++	if (step == newest_step && pause_ms && (!single_access || fine)) {
++		sweet_log_kick();
++		sleep_ms(pause_ms);
++	}
++}
++
++static void
++announce(const char *what)
++{
++	printf("adreno: step %u: %s\n", step, what);
++	hold(false);
++}
++
++static uint32_t
++get(struct block *b, const char *name, uint32_t offset)
++{
++	uint32_t value;
++
++	need(b);
++	if (quiet) {
++		return rd(b->base + offset);
++	}
++	if (step == newest_step && fine) {
++		printf("adreno: %u: about to read %s %s at %#x\n", step, b->name, name, b->phys + offset);
++		hold(true);
++	}
++	value = rd(b->base + offset);
++	printf("adreno: %u: %s %s (%#x) = %#x\n", step, b->name, name, b->phys + offset, value);
++	return value;
++}
++
++static uint32_t
++get8(struct block *b, const char *name, uint32_t offset)
++{
++	uint32_t value;
++
++	need(b);
++	value = rd8(b->base + offset);
++	printf("adreno: %u: %s %s (%#x) = %#x\n", step, b->name, name, b->phys + offset, value);
++	return value;
++}
++
++static void
++put(struct block *b, const char *name, uint32_t offset, uint32_t value)
++{
++	need(b);
++	if (!quiet) {
++		printf("adreno: %u: about to write %s %s at %#x: %#x\n", step, b->name, name, b->phys + offset, value);
++		hold(true);
++	}
++	wr(b->base + offset, value);
++}
++
++/* Set bits unless they are set; what the register holds afterwards. */
++static uint32_t
++set(struct block *b, const char *name, uint32_t offset, uint32_t bits)
++{
++	uint32_t was = get(b, name, offset);
++
++	if ((was & bits) == bits) {
++		return was;
++	}
++	put(b, name, offset, was | bits);
++	return get(b, name, offset);
++}
++
++static bool
++wait_for(struct block *b, uint32_t offset, uint32_t mask, uint32_t value, uint32_t ms)
++{
++	for (uint32_t i = 0; i < ms * 10; i++) {
++		if ((rd(b->base + offset) & mask) == value) {
++			return true;
++		}
++		sleep_us(100);
++	}
++	return (rd(b->base + offset) & mask) == value;
++}
++
++/* ---- step 1: the clocks from outside, and RPMh's names ------------------------------------------------ */
++
++static struct block gcc = { "gcc", 0x00100000, 0x90000 };
++#define GCC_PLL_VOTE            0x52000         /* BIT(15) gcc_gpu_gpll0_clk_src, BIT(16) ..._div_clk_src */
++#define GCC_PLL_VOTE_GPU_DIV    (1u << 16)
++#define GCC_GPU_CFG_AHB_CBCR    0x71004
++#define GCC_GPU_MEMNOC_GFX_CBCR 0x7100c
++#define GCC_GPU_SNOC_DVM_GFX_CBCR 0x71018
++#define GCC_DDRSS_GPU_AXI_CBCR  0x71154
++#define CBCR_ENABLE             (1u << 0)
++#define CBCR_OFF                (1u << 31)
++
++/* live FDT reserved-memory@80860000 (qcom,cmd-db) */
++#define CMD_DB_PHYS             0x80860000UL
++#define CMD_DB_SIZE             0x20000UL
++
++struct cmd_db_slave {
++	uint16_t id, header_offset, data_offset, count, version, reserved[3];
++};
++struct cmd_db_header {
++	uint32_t version;
++	uint8_t magic[4];
++	struct cmd_db_slave slave[8];
++	uint32_t checksum, reserved;
++	uint8_t data[];
++};
++struct cmd_db_entry {
++	char id[8];
++	uint32_t priority[2];
++	uint32_t address;
++	uint16_t length, offset;
++};
++
++static const struct cmd_db_header *cmd_db;
++
++/* Where RPMh has a resource (0: nowhere) and, for a rail, the levels it knows. */
++static uint32_t
++rpmh_resource(const char *name, uint16_t *levels, unsigned *level_count)
++{
++	const struct cmd_db_header *db = cmd_db;
++	char id[8] = { 0 };
++
++	if (level_count != NULL) {
++		*level_count = 0;
++	}
++	if (db == NULL) {
++		db = cmd_db = (const struct cmd_db_header *)ml_io_map_wcomb(CMD_DB_PHYS, CMD_DB_SIZE);  /* memory, not registers */
++	}
++	if (db == NULL || db->magic[0] != 0xdb || db->magic[1] != 0x30 || db->magic[2] != 0x03 || db->magic[3] != 0x0c) {
++		return 0;
++	}
++	strlcpy(id, name, sizeof(id));
++	for (unsigned s = 0; s < 8; s++) {
++		const struct cmd_db_slave *slave = &db->slave[s];
++		const struct cmd_db_entry *entry = (const struct cmd_db_entry *)(db->data + slave->header_offset);
++
++		if (slave->id == 0 || slave->count > 512) {
++			continue;
++		}
++		for (unsigned i = 0; i < slave->count; i++) {
++			const uint8_t *data = db->data + slave->data_offset + entry[i].offset;
++			unsigned count = entry[i].length / 2u;
++
++			if (memcmp(entry[i].id, id, sizeof(id)) != 0) {
++				continue;
++			}
++			if ((unsigned)slave->data_offset + entry[i].offset + entry[i].length > CMD_DB_SIZE - 0x1000) {
++				count = 0;
++			}
++			for (unsigned l = 0; levels != NULL && l < count && l < 16; l++) {
++				levels[l] = (uint16_t)(data[2 * l] | data[2 * l + 1] << 8);
++				if (l > 0 && levels[l] == 0) {
++					break;
++				}
++				*level_count = l + 1;
++			}
++			return entry[i].address;
++		}
++	}
++	return 0;
++}
++
++static void
++show_rpmh_resource(const char *name)
++{
++	uint16_t level[16];
++	unsigned count = 0;
++	uint32_t address = rpmh_resource(name, level, &count);
++	char levels[160];
++	int at = 0;
++
++	if (address == 0) {
++		printf("adreno: %u: RPMh has no \"%s\"\n", step, name);
++		return;
++	}
++	levels[0] = 0;
++	for (unsigned l = 0; l < count && at < (int)sizeof(levels) - 8; l++) {
++		at += snprintf(levels + at, sizeof(levels) - (size_t)at, " %u", level[l]);
++	}
++	printf("adreno: %u: RPMh has \"%s\" at %#x; levels:%s\n", step, name, address, levels);
++}
++
++static bool
++step_outside(void)
++{
++	announce("read the GPU's clocks in the global clock controller");
++	get(&gcc, "pll votes", GCC_PLL_VOTE);
++	get(&gcc, "gpu_cfg_ahb", GCC_GPU_CFG_AHB_CBCR);
++	get(&gcc, "gpu_memnoc_gfx", GCC_GPU_MEMNOC_GFX_CBCR);
++	get(&gcc, "gpu_snoc_dvm_gfx", GCC_GPU_SNOC_DVM_GFX_CBCR);
++	get(&gcc, "ddrss_gpu_axi", GCC_DDRSS_GPU_AXI_CBCR);
++
++	announce("look up the GPU's supply rails in the RPMh command DB (memory at 0x80860000)");
++	show_rpmh_resource("gfx.lvl");
++	show_rpmh_resource("cx.lvl");
++	show_rpmh_resource("mx.lvl");
++	return true;
++}
++
++/* ---- step 2: the fuses ------------------------------------------------------------------------------- */
++
++static struct block qfprom = { "qfprom", 0x00784000, 0x3000 };
++#define QFPROM_GPU_SPEED_BIN    0x19b           /* live FDT gpu_speed_bin@19b: bits 5..7 */
++
++static bool
++step_fuses(void)
++{
++	uint32_t bin;
++
++	announce("read the GPU speed-bin fuse (qfprom 0x784000 + 0x19b)");
++	bin = get8(&qfprom, "speed bin", QFPROM_GPU_SPEED_BIN) >> 5 & 0x7;
++	printf("adreno: %u: speed bin %u (live FDT qcom,speed-bin 0..3 select the GPU power tables)\n", step, bin);
++	return true;
++}
++
++/* ---- step 3: the GPU's clock controller ----------------------------------------------------------------- */
++
++static struct block gpucc = { "gpucc", 0x03d90000, 0x9000 };
++#define GPUCC_PLL0_MODE         0x0000
++#define GPUCC_PLL1_MODE         0x0100
++#define GPUCC_CXO_AON_CBCR      0x1004
++#define GPUCC_GX_SW_RESET       0x1008
++#define GPUCC_GX_GDSCR          0x100c
++#define GPUCC_GX_GMU_CBCR       0x1064
++#define GPUCC_CX_GDSCR          0x106c
++#define GPUCC_AHB_CBCR          0x1078
++#define GPUCC_CX_GMU_CBCR       0x1098
++#define GPUCC_CXO_CBCR          0x109c
++#define GPUCC_GMU_RCGR          0x1120
++#define GPUCC_GX_CLAMP_IO       0x1508          /* gpucc-sm8250.c gpu_gx_gdsc clamp_io_ctrl */
++#define GPUCC_CX_HW_CTRL        0x1540
++#define GPUCC_SMMU_VOTE_CBCR    0x5000
++
++#define GDSC_SW_COLLAPSE        (1u << 0)
++#define GDSC_HW_CONTROL         (1u << 1)
++#define GDSC_POWER_ON           (1u << 31)
++
++static bool
++step_gpucc(void)
++{
++	announce("make sure the clock of the GPU clock controller's registers runs (gcc_gpu_cfg_ahb)");
++	if ((set(&gcc, "gpu_cfg_ahb", GCC_GPU_CFG_AHB_CBCR, CBCR_ENABLE) & CBCR_OFF) &&
++	    !wait_for(&gcc, GCC_GPU_CFG_AHB_CBCR, CBCR_OFF, 0, 10)) {
++		printf("adreno: %u: it stays off (%#x): the GPU's clock controller would not answer\n", step,
++		    rd(gcc.base + GCC_GPU_CFG_AHB_CBCR));
++		return false;
++	}
++
++	announce("read the GPU's clock controller (0x3d90000) as it is: the first access to the GPU's part of the SoC");
++	get(&gpucc, "cx_gdscr", GPUCC_CX_GDSCR);
++	get(&gpucc, "cx_hw_ctrl", GPUCC_CX_HW_CTRL);
++	get(&gpucc, "gx_gdscr", GPUCC_GX_GDSCR);
++	get(&gpucc, "gx_sw_reset", GPUCC_GX_SW_RESET);
++	get(&gpucc, "gx_clamp_io", GPUCC_GX_CLAMP_IO);
++	get(&gpucc, "pll0 mode", GPUCC_PLL0_MODE);
++	get(&gpucc, "pll0 multiplier", GPUCC_PLL0_MODE + 4);
++	get(&gpucc, "pll1 mode", GPUCC_PLL1_MODE);
++	get(&gpucc, "pll1 multiplier", GPUCC_PLL1_MODE + 4);
++	get(&gpucc, "gmu_clk_src command", GPUCC_GMU_RCGR);
++	get(&gpucc, "gmu_clk_src source", GPUCC_GMU_RCGR + 4);
++	get(&gpucc, "cxo_aon", GPUCC_CXO_AON_CBCR);
++	get(&gpucc, "gx_gmu", GPUCC_GX_GMU_CBCR);
++	get(&gpucc, "ahb", GPUCC_AHB_CBCR);
++	get(&gpucc, "cx_gmu", GPUCC_CX_GMU_CBCR);
++	get(&gpucc, "cxo", GPUCC_CXO_CBCR);
++	get(&gpucc, "smmu vote", GPUCC_SMMU_VOTE_CBCR);
++	return true;
++}
++
++/* ---- step 4: CX power --------------------------------------------------------------------------------- */
++
++static bool
++gpucc_answers(void)
++{
++	need(&gcc);
++	need(&gpucc);
++	if (rd(gcc.base + GCC_GPU_CFG_AHB_CBCR) & CBCR_OFF) {
++		printf("adreno: %u: the GPU clock controller's registers have no clock (gcc gpu_cfg_ahb %#x): step 3\n", step,
++		    rd(gcc.base + GCC_GPU_CFG_AHB_CBCR));
++		return false;
++	}
++	return true;
++}
++
++static bool
++cx_is_on(void)
++{
++	return (rd(gpucc.base + GPUCC_CX_GDSCR) | rd(gpucc.base + GPUCC_CX_HW_CTRL)) & GDSC_POWER_ON;
++}
++
++static bool
++step_cx_power(void)
++{
++	uint32_t gdscr;
++
++	if (!gpucc_answers()) {
++		return false;
++	}
++	announce("switch the CX half of the GPU block on (gpu_cx_gdsc): clear the collapse bit of its power switch");
++	gdscr = get(&gpucc, "cx_gdscr", GPUCC_CX_GDSCR);
++	get(&gpucc, "cx_hw_ctrl", GPUCC_CX_HW_CTRL);
++	if (cx_is_on()) {
++		/* Phase A never leaves CX on, so this is the bootloader's (or a crashed run's): use it as it is. */
++		printf("adreno: %u: CX is on already: going on with it as it is\n", step);
++		return true;
++	}
++	if (gdscr & GDSC_HW_CONTROL) {
++		printf("adreno: %u: the switch is under hardware control: not ours to operate\n", step);
++		return false;
++	}
++	put(&gpucc, "cx_gdscr", GPUCC_CX_GDSCR, gdscr & ~GDSC_SW_COLLAPSE);
++	for (int i = 0; i < 500 && !cx_is_on(); i++) {
++		sleep_us(100);
++	}
++	get(&gpucc, "cx_gdscr", GPUCC_CX_GDSCR);
++	get(&gpucc, "cx_hw_ctrl", GPUCC_CX_HW_CTRL);
++	if (!cx_is_on()) {
++		printf("adreno: %u: CX does not come on\n", step);
++		return false;
++	}
++	cx_ours = true;
++	printf("adreno: %u: CX is on\n", step);
++	if (rd(gpucc.base + GPUCC_GX_GDSCR) & GDSC_POWER_ON) {
++		printf("adreno: %u: THE 3D CORE HAS POWER ALREADY: left on by an earlier kernel; restart the phone\n", step);
++		return false;
++	}
++	return true;
++}
++
++/* ---- step 5: clocks ------------------------------------------------------------------------------------ */
++
++#define RCG_UPDATE              (1u << 0)
++#define RCG_SOURCE_MASK         0x371fu         /* [4:0] 2*divider-1, [10:8] source, [13:12] mode */
++#define RCG_GPLL0_DIV(twice)    (6u << 8 | ((twice) - 1))       /* source 6: GPLL0 / 2 = 300 MHz */
++
++static bool
++clock_on(struct block *b, const char *name, uint32_t cbcr, bool must)
++{
++	if (!(set(b, name, cbcr, CBCR_ENABLE) & CBCR_OFF) || wait_for(b, cbcr, CBCR_OFF, 0, 10)) {
++		return true;
++	}
++	printf("adreno: %u: %s %s stays off (%#x)%s\n", step, b->name, name, rd(b->base + cbcr),
++	    must ? "" : "; its status bit is not one to rely on, going on");
++	return !must;
++}
++
++static bool
++clock_source(const char *name, uint32_t rcgr, uint32_t source)
++{
++	uint32_t was = get(&gpucc, name, rcgr + 4);
++
++	if ((was & RCG_SOURCE_MASK) == source) {
++		return true;
++	}
++	put(&gpucc, name, rcgr + 4, (was & ~RCG_SOURCE_MASK) | source);
++	put(&gpucc, name, rcgr, rd(gpucc.base + rcgr) | RCG_UPDATE);
++	if (!wait_for(&gpucc, rcgr, RCG_UPDATE, 0, 10)) {
++		printf("adreno: %u: %s does not take its new source (command %#x)\n", step, name, rd(gpucc.base + rcgr));
++		return false;
++	}
++	get(&gpucc, name, rcgr + 4);
++	return true;
++}
++
++/* Frequency counter, debugcc-kona.c. */
++#define GCC_DEBUG_MUX           0x62000
++#define GCC_DEBUG_MUX_GPUCC     0x163
++#define GCC_DEBUG_DIV           0x62004
++#define GCC_DEBUG_CBCR          0x62008
++#define GCC_XO_DIV4_CBCR        0x4300c
++#define GCC_MEASURE_CTL         0x62038
++#define MEASURE_RUN             (1u << 20)
++#define MEASURE_CLEAR           (1u << 21)
++#define GCC_MEASURE_STATUS      0x6203c
++#define MEASURE_DONE            (1u << 25)
++#define MEASURE_BRIEF           0x1000
++#define MEASURE_FULL            0x20000
++#define MEASURE_FAILED          0xffffffffu
++#define GPUCC_DEBUG_DIV         0x10fc
++#define GPUCC_DEBUG_CBCR        0x1100
++#define GPUCC_DEBUG_MUX         0x1568
++#define GPUCC_DEBUG_CXO_AON     0x0a
++#define GPUCC_DEBUG_GX_GFX3D    0x0b
++#define GPUCC_DEBUG_GX_GMU      0x0f
++#define GPUCC_DEBUG_AHB         0x10
++#define GPUCC_DEBUG_CX_GMU      0x18
++#define GPUCC_DEBUG_CXO         0x19
++
++static uint32_t
++count_clock(uint32_t ticks)
++{
++	uint32_t control = get(&gcc, "measure control", GCC_MEASURE_CTL) & ~(MEASURE_RUN | MEASURE_CLEAR | 0xfffffu);
++	uint32_t status = 0;
++
++	put(&gcc, "measure control", GCC_MEASURE_CTL, control | MEASURE_CLEAR);
++	sleep_us(10);
++	put(&gcc, "measure control", GCC_MEASURE_CTL, control | ticks);
++	put(&gcc, "measure control", GCC_MEASURE_CTL, control | ticks | MEASURE_RUN);
++	for (int i = 0; i < 2000 && !(status & MEASURE_DONE); i++) {
++		sleep_us(100);
++		status = rd(gcc.base + GCC_MEASURE_STATUS);
++	}
++	put(&gcc, "measure control", GCC_MEASURE_CTL, control | ticks);
++	return status & MEASURE_DONE ? get(&gcc, "measure status", GCC_MEASURE_STATUS) & 0x1ffffff : MEASURE_FAILED;
++}
++
++/* Rate in Hz of a GPUCC clock; 0 if it stands still, MEASURE_FAILED if the counter does not finish. */
++static uint32_t
++measure(uint32_t select)
++{
++	uint32_t gpu_mux = get(&gpucc, "debug mux", GPUCC_DEBUG_MUX), gpu_div = get(&gpucc, "debug divider", GPUCC_DEBUG_DIV);
++	uint32_t gpu_cbcr = get(&gpucc, "debug output", GPUCC_DEBUG_CBCR), mux = get(&gcc, "debug mux", GCC_DEBUG_MUX);
++	uint32_t div = get(&gcc, "debug divider", GCC_DEBUG_DIV), cbcr = get(&gcc, "debug input", GCC_DEBUG_CBCR);
++	uint32_t base = get(&gcc, "crystal/4", GCC_XO_DIV4_CBCR), control = get(&gcc, "measure control", GCC_MEASURE_CTL);
++	uint32_t brief, full;
++
++	put(&gpucc, "debug mux", GPUCC_DEBUG_MUX, (gpu_mux & ~0xffu) | select);
++	put(&gpucc, "debug divider", GPUCC_DEBUG_DIV, (gpu_div & ~0x3u) | 1);
++	put(&gpucc, "debug output", GPUCC_DEBUG_CBCR, gpu_cbcr | CBCR_ENABLE);
++	put(&gcc, "debug mux", GCC_DEBUG_MUX, (mux & ~0x3ffu) | GCC_DEBUG_MUX_GPUCC);
++	put(&gcc, "debug divider", GCC_DEBUG_DIV, (div & ~0xfu) | 1);
++	put(&gcc, "debug input", GCC_DEBUG_CBCR, cbcr | CBCR_ENABLE);
++	put(&gcc, "crystal/4", GCC_XO_DIV4_CBCR, base | CBCR_ENABLE);
++	brief = count_clock(MEASURE_BRIEF);
++	full = brief == MEASURE_FAILED ? MEASURE_FAILED : count_clock(MEASURE_FULL);
++	put(&gcc, "measure control", GCC_MEASURE_CTL, control);
++	put(&gcc, "crystal/4", GCC_XO_DIV4_CBCR, base);
++	put(&gcc, "debug input", GCC_DEBUG_CBCR, cbcr);
++	put(&gcc, "debug divider", GCC_DEBUG_DIV, div);
++	put(&gcc, "debug mux", GCC_DEBUG_MUX, mux);
++	put(&gpucc, "debug output", GPUCC_DEBUG_CBCR, gpu_cbcr);
++	put(&gpucc, "debug divider", GPUCC_DEBUG_DIV, gpu_div);
++	put(&gpucc, "debug mux", GPUCC_DEBUG_MUX, gpu_mux);
++
++	if (full == MEASURE_FAILED) {
++		return MEASURE_FAILED;
++	}
++	if (full == brief) {
++		return 0;
++	}
++	/* the vendor's formula; times 4 for the two divide-by-2 stages on the way to the counter */
++	return (uint32_t)(((uint64_t)full * 10 + 15) * 4800000 / ((uint64_t)MEASURE_FULL * 10 + 35) * 4);
++}
++
++static uint32_t
++measure_quietly(uint32_t select)
++{
++	uint32_t hz;
++
++	quiet = true;
++	hz = measure(select);
++	quiet = false;
++	return hz;
++}
++
++static bool
++measure_clocks(void)
++{
++	static const struct {
++		const char *name;
++		uint32_t select;
++	} clocks[] = {
++		{ "cx_gmu (200 MHz was asked for)", GPUCC_DEBUG_CX_GMU }, { "cxo_aon", GPUCC_DEBUG_CXO_AON },
++		{ "gx_gmu (should be off)", GPUCC_DEBUG_GX_GMU }, { "gx_gfx3d (should be off)", GPUCC_DEBUG_GX_GFX3D },
++		{ "ahb", GPUCC_DEBUG_AHB },
++	};
++	uint32_t hz, ahb_hz = MEASURE_FAILED;
++
++	announce("measure the GPU block's clocks with the SoC's frequency counter (gcc 0x162000.., gpucc 0x3d910fc..)");
++	hz = measure(GPUCC_DEBUG_CXO);
++	if (hz == MEASURE_FAILED) {
++		printf("adreno: %u: the counter did not finish: it cannot be used as it is set up here\n", step);
++		return false;
++	}
++	printf("adreno: %u: measured: cxo runs at %u Hz (the crystal: 19200000)\n", step, hz);
++	if (hz < 18600000 || hz > 19800000) {
++		printf("adreno: %u: the counter does not show the crystal's rate: nothing it says can be used\n", step);
++		return false;
++	}
++	for (unsigned i = 0; i < sizeof(clocks) / sizeof(clocks[0]); i++) {
++		hz = measure_quietly(clocks[i].select);
++		if (hz == MEASURE_FAILED) {
++			printf("adreno: %u: measured: %s: the counter did not finish\n", step, clocks[i].name);
++		} else {
++			printf("adreno: %u: measured: %s runs at %u Hz\n", step, clocks[i].name, hz);
++		}
++		if (clocks[i].select == GPUCC_DEBUG_AHB) {
++			ahb_hz = hz;
++		}
++	}
++	if (ahb_hz != MEASURE_FAILED && ahb_hz >= 1000000) {
++		printf("adreno: %u: THE REGISTER BUS OF THE GPU BLOCK HAS ITS CLOCK\n", step);
++		return true;
++	}
++	printf("adreno: %u: the register bus of the GPU block has no clock\n", step);
++	return false;
++}
++
++/*
++ * The GMU at 200 MHz from GPLL0/2 (gpucc-sm8250.c ftbl_gpu_cc_gmu_clk_src), its bus and memory
++ * clocks, the SMMU vote. Unlike SC7280 there is no hub clock to set.
++ */
++static bool
++step_clocks(void)
++{
++	if (!gpucc_answers()) {
++		return false;
++	}
++	if (!cx_is_on()) {
++		printf("adreno: %u: CX is off: step 4\n", step);
++		return false;
++	}
++	announce("in the global clock controller: ask for the 300 MHz tap for the GPU; the GPU's bus and memory clocks on");
++	set(&gcc, "pll votes", GCC_PLL_VOTE, GCC_PLL_VOTE_GPU_DIV);
++	if (!clock_on(&gcc, "gpu_memnoc_gfx", GCC_GPU_MEMNOC_GFX_CBCR, false) ||
++	    !clock_on(&gcc, "gpu_snoc_dvm_gfx", GCC_GPU_SNOC_DVM_GFX_CBCR, true) ||
++	    !clock_on(&gcc, "ddrss_gpu_axi", GCC_DDRSS_GPU_AXI_CBCR, false)) {
++		return false;
++	}
++
++	announce("in the GPU's clock controller: the GMU's clock to 200 MHz");
++	if (!clock_source("gmu_clk_src", GPUCC_GMU_RCGR, RCG_GPLL0_DIV(3))) {        /* 300 MHz / 1.5 */
++		return false;
++	}
++
++	announce("in the GPU's clock controller: the clocks of the GMU and of the SMMU on");
++	if (!clock_on(&gpucc, "cxo", GPUCC_CXO_CBCR, true) ||
++	    !clock_on(&gpucc, "ahb", GPUCC_AHB_CBCR, false) ||
++	    !clock_on(&gpucc, "cx_gmu", GPUCC_CX_GMU_CBCR, true) ||
++	    !clock_on(&gpucc, "smmu vote", GPUCC_SMMU_VOTE_CBCR, false)) {
++		return false;
++	}
++	return measure_clocks();
++}
++
++static bool
++cx_ready(void)
++{
++	uint32_t gmu_clock, ahb_hz;
++
++	if (!gpucc_answers()) {
++		return false;
++	}
++	gmu_clock = rd(gpucc.base + GPUCC_CX_GMU_CBCR);
++	if (!cx_is_on() || (gmu_clock & (CBCR_ENABLE | CBCR_OFF)) != CBCR_ENABLE) {
++		printf("adreno: %u: needs CX on (it is %s) and the GMU's clock running (cx_gmu %#x): steps 4 and 5\n", step,
++		    cx_is_on() ? "on" : "off", gmu_clock);
++		return false;
++	}
++	ahb_hz = measure_quietly(GPUCC_DEBUG_AHB);
++	if (ahb_hz == MEASURE_FAILED || ahb_hz < 1000000) {
++		printf("adreno: %u: the GPU block's register bus clock measures %u Hz: not touching its registers\n", step, ahb_hz);
++		return false;
++	}
++	return true;
++}
++
++/* ---- step 6: the first words from the GPU block ------------------------------------------------------- */
++
++static struct block gmu = { "gmu", 0x03d6a000, 0x30000 };
++#define GMU_WORD(n)             (4u * (n))
++#define GMU_DTCM                GMU_WORD(0x1c00)
++#define GMU_DTCM_VERSIONS       GMU_WORD(0x1c00 + 0xff8)
++#define GMU_CM3_SYSRESET        GMU_WORD(0x5000)
++#define GMU_CM3_BOOT_CONFIG     GMU_WORD(0x5001)
++#define GMU_CM3_FW_INIT_RESULT  GMU_WORD(0x501c)
++#define GMU_CM3_CFG             GMU_WORD(0x502d)
++#define GMU_ALWAYS_ON_COUNTER_L GMU_WORD(0x5088)
++#define GMU_ALWAYS_ON_COUNTER_H GMU_WORD(0x5089)
++#define GMU_SPTPRAC_PWR_CLK_STATUS GMU_WORD(0x50d0)
++#define GMU_RPMH_POWER_STATE    GMU_WORD(0x50ec)
++#define GMU_HFI_CTRL_STATUS     GMU_WORD(0x5180)
++#define GMU_HFI_VERSION_INFO    GMU_WORD(0x5181)
++#define GMU_GENERAL_7           GMU_WORD(0x51cc)
++#define GMU_AO_HOST_INTERRUPT_STATUS GMU_WORD(0x9305)
++#define GMU_RSCC_CONTROL_ACK    GMU_WORD(0x9308)
++#define GMU_AO_GPU_CX_BUSY_STATUS GMU_WORD(0x930c)
++#define GMU_AHB_FENCE_STATUS    GMU_WORD(0x9313)
++
++static struct block gbif = { "gbif", 0x03d00000 + 4 * 0x3c00, 0x1000 };
++#define GBIF_SCACHE_CNTL0       (4 * 0x01)
++#define GBIF_HALT               (4 * 0x45)
++#define GBIF_HALT_ACK           (4 * 0x46)
++
++static bool
++step_first_words(void)
++{
++	uint64_t start, nanos;
++	uint32_t before, hz;
++
++	if (!cx_ready()) {
++		return false;
++	}
++	announce("read registers of the GMU (0x3d6a000): the first words from the GPU block itself");
++	get(&gmu, "cm3_sysreset", GMU_CM3_SYSRESET);
++	get(&gmu, "cm3_boot_config", GMU_CM3_BOOT_CONFIG);
++	get(&gmu, "cm3_fw_init_result", GMU_CM3_FW_INIT_RESULT);
++	get(&gmu, "cm3_cfg", GMU_CM3_CFG);
++	get(&gmu, "hfi_ctrl_status", GMU_HFI_CTRL_STATUS);
++	get(&gmu, "hfi_version_info", GMU_HFI_VERSION_INFO);
++	get(&gmu, "general_7", GMU_GENERAL_7);
++	get(&gmu, "rpmh_power_state", GMU_RPMH_POWER_STATE);
++	get(&gmu, "sptprac_pwr_clk_status", GMU_SPTPRAC_PWR_CLK_STATUS);
++	get(&gmu, "ao_host_interrupt_status", GMU_AO_HOST_INTERRUPT_STATUS);
++	get(&gmu, "ao_gpu_cx_busy_status", GMU_AO_GPU_CX_BUSY_STATUS);
++	get(&gmu, "ahb_fence_status", GMU_AHB_FENCE_STATUS);
++	get(&gmu, "always_on_counter_h", GMU_ALWAYS_ON_COUNTER_H);
++	get(&gmu, "always_on_counter_l", GMU_ALWAYS_ON_COUNTER_L);
++	start = mach_absolute_time();
++	before = rd(gmu.base + GMU_ALWAYS_ON_COUNTER_L);
++	sleep_ms(10);
++	hz = rd(gmu.base + GMU_ALWAYS_ON_COUNTER_L) - before;
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &nanos);
++	hz = nanos ? (uint32_t)((uint64_t)hz * NSEC_PER_SEC / nanos) : 0;
++	printf("adreno: %u: the GMU's counter counts at %u Hz: %s\n", step, hz, hz > 18000000 && hz < 20500000 ?
++	    "the 19.2 MHz crystal: THE GPU BLOCK IS ALIVE" : "not the crystal's 19.2 MHz");
++	for (uint32_t i = 0; i < 5; i++) {
++		get(&gmu, "dtcm, where firmware has its versions", GMU_DTCM_VERSIONS + 4 * i);
++	}
++
++	announce("read the GPU's bus interface (0x3d0f000)");
++	get(&gbif, "scache_cntl0", GBIF_SCACHE_CNTL0);
++	get(&gbif, "halt", GBIF_HALT);
++	get(&gbif, "halt_ack", GBIF_HALT_ACK);
++	return true;
++}
++
++/* ---- step 7: the GMU's channel to RPMh ----------------------------------------------------------------- */
++
++static struct block rscc = { "rscc", 0x03de0000, 0x10000 };
++#define RSCC_RSC_STATUS0_DRV0   (4 * 0x004)
++#define RSCC_PDC_SLAVE_ID_DRV0  (4 * 0x00b)
++#define RSCC_SEQ_BUSY_DRV0      (4 * 0x101)
++#define RSCC_SEQ_MEM_0_DRV0     (4 * 0x180)
++#define RSCC_TCS0_DRV0_STATUS   (4 * 0x346)
++
++static bool
++step_rscc(void)
++{
++	if (!cx_ready()) {
++		return false;
++	}
++	announce("read the GMU's RPMh channel (0x3de0000)");
++	get(&rscc, "rsc_status0_drv0", RSCC_RSC_STATUS0_DRV0);
++	get(&rscc, "pdc_slave_id_drv0", RSCC_PDC_SLAVE_ID_DRV0);
++	get(&rscc, "seq_busy_drv0", RSCC_SEQ_BUSY_DRV0);
++	get(&rscc, "seq_mem_0_drv0", RSCC_SEQ_MEM_0_DRV0);
++	get(&rscc, "tcs0_drv0_status", RSCC_TCS0_DRV0_STATUS);
++	get(&gmu, "rscc_control_ack", GMU_RSCC_CONTROL_ACK);
++	return true;
++}
++
++/* ---- steps 8 and 9: the SMMU --------------------------------------------------------------------------- */
++
++static struct block smmu = { "smmu", 0x03da0000, 0x10000 };
++#define SMMU_SCR0               0x000
++#define SMMU_IDR0               0x020
++#define SMMU_IDR1               0x024
++#define SMMU_IDR2               0x028
++#define SMMU_IDR7               0x03c
++#define SMMU_SGFSR              0x048
++#define SMMU_SMR(n)             (0x800 + 4 * (n))
++#define SMMU_S2CR(n)            (0xc00 + 4 * (n))
++#define SMMU_CBAR(n)            (4 * (n))
++#define SMMU_CB_SCTLR           0x00
++#define SMMU_CB_TTBR0           0x20
++#define SMMU_CB_TCR             0x30
++#define SMMU_CB_FSR             0x58
++
++static uint32_t smmu_page, smmu_pages, smmu_contexts, smmu_matches;
++
++static bool
++smmu_layout(void)
++{
++	uint32_t idr0 = get(&smmu, "idr0", SMMU_IDR0), idr1 = get(&smmu, "idr1", SMMU_IDR1);
++
++	smmu_page = idr1 >> 31 ? 0x10000 : 0x1000;
++	smmu_pages = 2u << (idr1 >> 28 & 7);
++	smmu_contexts = idr1 & 0xff;
++	smmu_matches = idr0 & 0xff;
++	printf("adreno: %u: SMMU: %u stream match registers, %u contexts, %u pages of %#x before the contexts' own\n", step,
++	    smmu_matches, smmu_contexts, smmu_pages, smmu_page);
++	if (2 * smmu_pages * smmu_page != smmu.size) {
++		printf("adreno: %u: that makes %#x of registers, the device tree says %#x: not reading further\n", step,
++		    2 * smmu_pages * smmu_page, smmu.size);
++		return false;
++	}
++	return true;
++}
++
++static bool
++step_smmu(void)
++{
++	if (!cx_ready()) {
++		return false;
++	}
++	announce("read the ID registers of the GPU's SMMU (0x3da0000): global registers, which the hypervisor answers for");
++	if (!smmu_layout()) {
++		return false;
++	}
++	get(&smmu, "idr2", SMMU_IDR2);
++	get(&smmu, "idr7", SMMU_IDR7);
++	get(&smmu, "scr0", SMMU_SCR0);
++	get(&smmu, "sgfsr", SMMU_SGFSR);
++
++	announce("read the SMMU's stream table and the kinds of its contexts");
++	for (uint32_t i = 0; i < smmu_matches && i < 16; i++) {
++		get(&smmu, "smr", SMMU_SMR(i));
++		get(&smmu, "s2cr", SMMU_S2CR(i));
++	}
++	for (uint32_t i = 0; i < smmu_contexts && i < 16; i++) {
++		get(&smmu, "cbar", smmu_page + SMMU_CBAR(i));
++	}
++	return true;
++}
++
++static bool
++step_smmu_context(void)
++{
++	uint32_t context;
++
++	if (!cx_ready()) {
++		return false;
++	}
++	announce("read translation context 0 of the SMMU");
++	if (!smmu_layout()) {
++		return false;
++	}
++	context = smmu_pages * smmu_page;
++	get(&smmu, "cb0 sctlr", context + SMMU_CB_SCTLR);
++	get(&smmu, "cb0 ttbr0, low", context + SMMU_CB_TTBR0);
++	get(&smmu, "cb0 ttbr0, high", context + SMMU_CB_TTBR0 + 4);
++	get(&smmu, "cb0 tcr", context + SMMU_CB_TCR);
++	get(&smmu, "cb0 fsr", context + SMMU_CB_FSR);
++	return true;
++}
++
++/* ---- step 10: the GMU's memory -------------------------------------------------------------------------- */
++
++static bool
++step_gmu_memory(void)
++{
++	static const uint32_t pattern[2] = { 0x600d0001, 0x0a110002 };
++	uint32_t was[2], back[2];
++
++	if (!cx_ready()) {
++		return false;
++	}
++	announce("hold the GMU's processor in reset, write two words into its data memory (0x3d71000), read them back");
++	if (get(&gmu, "cm3_fw_init_result", GMU_CM3_FW_INIT_RESULT) == 0xbabeface) {
++		printf("adreno: %u: firmware is running in the GMU: leaving its memory alone\n", step);
++		return false;
++	}
++	put(&gmu, "cm3_sysreset", GMU_CM3_SYSRESET, 1);
++	get(&gmu, "cm3_sysreset", GMU_CM3_SYSRESET);
++	for (int i = 0; i < 2; i++) {
++		was[i] = get(&gmu, "dtcm", GMU_DTCM + 4 * i);
++	}
++	for (int i = 0; i < 2; i++) {
++		put(&gmu, "dtcm", GMU_DTCM + 4 * i, pattern[i]);
++	}
++	for (int i = 0; i < 2; i++) {
++		back[i] = get(&gmu, "dtcm", GMU_DTCM + 4 * i);
++	}
++	for (int i = 0; i < 2; i++) {
++		put(&gmu, "dtcm", GMU_DTCM + 4 * i, was[i]);
++	}
++	printf("adreno: %u: the GMU's memory %s\n", step, back[0] == pattern[0] && back[1] == pattern[1] ?
++	    "TAKES WHAT IS WRITTEN: its firmware can be loaded" : "does not hold what was written");
++	return back[0] == pattern[0] && back[1] == pattern[1];
++}
++
++/* ---- all of it together ---------------------------------------------------------------------------- */
++
++static bool(*const steps[])(void) = {
++	step_outside, step_fuses, step_gpucc, step_cx_power, step_clocks, step_first_words, step_rscc, step_smmu,
++	step_smmu_context, step_gmu_memory,
++};
++#define STEPS                   ((uint32_t)(sizeof(steps) / sizeof(steps[0])))
++
++/* Phase A leaves nothing on: CX back off if step 4 switched it on. */
++static void
++gpu_block_stop(void)
++{
++	step = 0;
++	newest_step = ~0u;
++	if (cx_ours && gpucc_answers()) {
++		put(&gpucc, "cx_gdscr", GPUCC_CX_GDSCR, rd(gpucc.base + GPUCC_CX_GDSCR) | GDSC_SW_COLLAPSE);
++		for (int i = 0; i < 1000 && cx_is_on(); i++) {
++			sleep_us(100);
++		}
++		get(&gpucc, "cx_gdscr", GPUCC_CX_GDSCR);
++		get(&gpucc, "cx_hw_ctrl", GPUCC_CX_HW_CTRL);
++		cx_ours = false;
++	}
++}
++
++void
++sweet_adreno_init(void)
++{
++	uint32_t only = 0, done = 0;
++
++	if (!PE_parse_boot_argn("adreno", &last_step, sizeof(last_step)) || last_step == 0) {
++		return;
++	}
++	PE_parse_boot_argn("adreno_skip", &skip_steps, sizeof(skip_steps));
++	if (PE_parse_boot_argn("adreno_only", &only, sizeof(only)) && only > 0 && only <= STEPS) {
++		last_step = only;
++		skip_steps = ~(1u << only);
++	}
++	PE_parse_boot_argn("adreno_pause", &pause_ms, sizeof(pause_ms));
++	PE_parse_boot_argn("adreno_fine", &fine, sizeof(fine));
++	if (last_step > STEPS) {
++		last_step = STEPS;
++	}
++	for (newest_step = last_step; newest_step > 0 && (skip_steps & 1u << newest_step); newest_step--) {
++	}
++	printf("adreno: steps up to %u, without those in mask %#x; step %u is the new one and waits %u ms %s\n", last_step,
++	    skip_steps, newest_step, pause_ms, fine ? "before every access" : "after each announcement");
++	for (step = 1; step <= last_step; step++) {
++		if (skip_steps & 1u << step) {
++			continue;
++		}
++		if (!steps[step - 1]()) {
++			printf("adreno: step %u: FAILED; the steps after it are not attempted\n", step);
++			break;
++		}
++		printf("adreno: step %u: done\n", step);
++		done = step;
++	}
++	gpu_block_stop();
++	printf("adreno: over after step %u; the system goes on starting\n", done);
++	sweet_log_kick();
++}
++#elif defined(ARM64_BOARD_CONFIG_SWEET)
++void sweet_adreno_init(void);
++
++void
++sweet_adreno_init(void)
++{
++}
++#endif
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 75d2106..85c8089 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -54,6 +54,7 @@ extern void sweet_keys_init(void);
+ void sweet_gpu_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_cpufreq_init(void);
++extern void sweet_adreno_init(void);
+ extern void sweet_usb_probe(void);
+ 
+ #define REG_CAP         0x00
+@@ -658,6 +659,7 @@ sweet_ufs_init(void)
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
+ 	sweet_log_start();
+ 	sweet_cpufreq_init();
++	sweet_adreno_init();	/* no-op unless adreno=N is on the command line */
+ 	sweet_sample_start();
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+@@ -771,6 +773,15 @@ sweet_reset_to_bootloader(void)
+ 	}
+ }
+ 
++/* Flush the console ring now (sweet_adreno.c: before an access that may reset the phone). */
++void sweet_log_kick(void);
++
++void
++sweet_log_kick(void)
++{
++	wakeup(&sweet_log_chan);
++}
++
+ /* Remote reset (sweet_usb.c, UDP "reset"): same path as the sweetreset deadline. */
+ void sweet_reset_request(void);
+ 

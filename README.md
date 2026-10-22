@@ -343,3 +343,4 @@ in its header:
 | Here | From HackiOS |
 |---|---|
 | `bsd/dev/sweet_cpufreq.c` (xnu 0107) | `xnu/files/bsd/dev/redwood_cpufreq.c`: EPSS clock raise, loop-speed check, `membench=1` |
+| `bsd/dev/sweet_adreno.c` (xnu 0108) | `xnu/files/bsd/dev/redwood_adreno.c`: the staged Adreno bring-up (`adreno=N`), steps 1-10 so far, with SM8250/Adreno 650 values |
