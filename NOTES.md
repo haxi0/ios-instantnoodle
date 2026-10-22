@@ -2,6 +2,25 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> 2026-10-22 ~21:50: BASE IS HACKIOS; iOS ROOT ON USERDATA WORKS (read first) <<<
+- UniXNU was tried in between (~18:00-21:00) and dropped by the user: it targets
+  iPadOS 17.7.11 only (iPhone iOS 17 needs PAC/arm64e, which SM8250 lacks) and
+  needs much plumbing. Its work stays on disk, unused: `../unixnu` (fork
+  haxi0/UniXNU), `../UniXNU-instantnoodle` and `../uefi-instantnoodle` (branch
+  `instantnoodle`, pushed; reached kernel entry and a UFS register probe; the
+  NativeUfs SM8250 patch adopts the firmware's SMMU entry SID 0x4e0 -> cb 2).
+- HackiOS (`../hackios`, fork haxi0/hackios-xnu-kernel, branch `instantnoodle`,
+  66d28e6 pushed): userdata (sda23) now holds the iOS volume and both cryptexes
+  (`tools/store-image.py` -> `fastboot flash userdata userland/store.simg`,
+  done 2026-10-22). Boot from `hackios/` with the phone in the bootloader:
+  `nix-shell --run 'bash -c ". common/lib.sh; load_device instantnoodle; ./xl enter && ./xl ramdisk userland/flashboot.apfs && XL_SECS=900 XL_CMDLINE=\"-v cpus=8 cpufreq=1 bootcpu=7 ufs=2 root_apfs=ufs_darwin\" ./xl run"'`
+  Log: `[ ok ] mount the iOS volume read only`, root switch, OS and App
+  cryptexes from /dev/ufs_darwin, SpringBoard up. Only 4 MB go over USB.
+- Next: `var_store=1 ufs_write=1` (persistent /private/var past block
+  2042368; untried here), volume keys (deferred by the user), GPU (Adreno
+  650), Wi-Fi (QCA6390), audio.
+- Android's userdata is overwritten: Android will not boot normally.
+
 ### >>> 2026-10-22 ~16:40: PROJECT REBASED ONTO HACKIOS (read first) <<<
 - **MILESTONE 2026-10-22 ~17:05: HACKIOS BOOTS iOS ON THE ONEPLUS 8** (user:
   "it booted", after the Apple logo). Stock HackiOS kernel/userland (iOS 16.5
