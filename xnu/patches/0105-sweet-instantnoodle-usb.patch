@@ -1,0 +1,219 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 731403c..0a64228 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -769,6 +769,16 @@ sweet_reset_to_bootloader(void)
+ 	}
+ }
+ 
++/* Remote reset (sweet_usb.c, UDP "reset"): same path as the sweetreset deadline. */
++void sweet_reset_request(void);
++
++void
++sweet_reset_request(void)
++{
++	sweet_reset_at = 1;
++	wakeup(&sweet_log_chan);
++}
++
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index da94a1b..eb0305c 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -63,6 +63,9 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ #define GCC_SIZE                0x00090000
+ #define GCC_USB30_PRIM_GDSCR    SWEET_DEV_USB_GDSCR	/* bit 31: power on */
+ #define CBCR_CLK_OFF            (1u << 31)
++#ifndef SWEET_DEV_USB_CBCR_CLKREF_NAME
++#define SWEET_DEV_USB_CBCR_CLKREF_NAME "clkref"
++#endif
+ 
+ static const struct {
+ 	const char *name;
+@@ -74,7 +77,7 @@ static const struct {
+ 	{ "cfg-noc-axi", SWEET_DEV_USB_CBCR_CFGNOC },
+ 	{ "aggre-axi", SWEET_DEV_USB_CBCR_AGGRE },
+ 	{ SWEET_DEV_USB_CBCR_AUX_NAME, SWEET_DEV_USB_CBCR_AUX },
+-	{ "clkref", SWEET_DEV_USB_CBCR_CLKREF },
++	{ SWEET_DEV_USB_CBCR_CLKREF_NAME, SWEET_DEV_USB_CBCR_CLKREF },
+ };
+ 
+ #define DWC3_PA                 SWEET_DEV_USB_DWC3_PA
+@@ -200,6 +203,13 @@ sweet_usb_probe(void)
+ 		printf("SWEET USB: DWC3 map failed\n");
+ 		return;
+ 	}
++#ifdef SWEET_DEV_USB_EUD_EN_PA
++	/* EUD owns the HS PHY while enabled (downstream msm_hsphy_init skips it). */
++	vm_offset_t eud = ml_io_map(SWEET_DEV_USB_EUD_EN_PA, 4);
++	if (eud != 0) {
++		printf("SWEET USB: EUD enable 0x%08x\n", usb_rd(eud, 0));
++	}
++#endif
+ 	printf("SWEET USB: DWC3 GSNPSID 0x%08x GCTL 0x%08x GSTS 0x%08x GUSB2PHYCFG 0x%08x\n",
+ 	    usb_rd(dwc, 0xc120), usb_rd(dwc, 0xc110), usb_rd(dwc, 0xc118), usb_rd(dwc, 0xc200));
+ 	printf("SWEET USB: DWC3 DCFG 0x%08x DCTL 0x%08x DEVTEN 0x%08x DSTS 0x%08x DALEPENA 0x%08x\n",
+@@ -960,6 +970,52 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ }
+ 
++/*
++ * Remote control over USB Ethernet: a UDP datagram "reset" to
++ * 192.168.7.2:5141 (tools/sweet-usbnet.sh reset) flushes the console log
++ * and reboots to the bootloader (bsd/dev/sweet_ufs.c, as sweetreset=N).
++ */
++extern void sweet_reset_request(void);
++
++static void
++ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	static char buf[64];
++	socket_t so = NULL;
++	struct sockaddr_in me;
++
++	bzero(&me, sizeof(me));
++	me.sin_len = sizeof(me);
++	me.sin_family = AF_INET;
++	me.sin_port = htons(5141);
++	for (;;) {
++		if (so == NULL) {
++			if (sock_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, &so) != 0) {
++				so = NULL;
++			} else if (sock_bind(so, (struct sockaddr *)&me) != 0) {
++				sock_close(so);
++				so = NULL;
++			}
++			if (so == NULL) {
++				ud_sleep_ms(1000);
++				continue;
++			}
++		}
++		struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) - 1 };
++		struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++		size_t n = 0;
++		if (sock_receive(so, &msg, 0, &n) != 0) {
++			ud_sleep_ms(100);
++			continue;
++		}
++		buf[n] = 0;
++		if (strncmp(buf, "reset", 5) == 0) {
++			printf("SWEET USB: remote reset requested\n");
++			sweet_reset_request();
++		}
++	}
++}
++
+ static void
+ sweet_usb_gadget_start(vm_offset_t dwc)
+ {
+@@ -1047,21 +1103,21 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 		printf("SWEET USB: stopping before step 5 (sweetusbstep=%d)\n", maxstep);
+ 		return;
+ 	}
+-	printf("SWEET USB: gadget step 5: QSCRATCH mode %d (0 none, 1 HS, 2 HS+SS)\n", vbus);
++	printf("SWEET USB: gadget step 5: VBUS mode %d (0 none, 1 HS, 2 HS+SS, 3 PHY byte, 4 PHY, 5 PHY+HS)\n", vbus);
+ 	usb_mark(SWEET_USB_MARK_STEP5);
+ 	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
+ 	if (qs != 0) {
+ 		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
+ 		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
+ 		    hs, ss, usb_rd(qs, 0x08));
+-		if (vbus >= 1) {
++		if (vbus == 1 || vbus == 2) {
+ 			printf("SWEET USB:   - HS VBUS override write\n");
+ 			*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
+ 			__asm__ volatile ("dsb sy" ::: "memory");
+ 			hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL);
+ 			printf("SWEET USB:   - HS_PHY_CTRL now 0x%08x\n", hs);
+ 		}
+-		if (vbus >= 2) {
++		if (vbus == 2) {
+ 			printf("SWEET USB:   - SS PHY write\n");
+ 			*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
+ 			__asm__ volatile ("dsb sy" ::: "memory");
+@@ -1085,6 +1141,30 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 		}
+ 	}
+ 
++	if (vbus == 4 || vbus == 5) {
++		/* Downstream kona order (phy-msm-snps-hs.c msm_hsphy_init, then
++		 * dwc3-msm dwc3_override_vbus_status): 32-bit read-modify-write of
++		 * the femto PHY, then UTMI_OTG_VBUS_VALID alone in the wrapper. */
++		vm_offset_t phy2 = ml_io_map(QUSB2_PA, QUSB2_SIZE);
++		if (phy2 != 0) {
++			volatile uint32_t *c1 = (volatile uint32_t *)(phy2 + 0x58);
++			volatile uint32_t *c2 = (volatile uint32_t *)(phy2 + 0x60);
++			printf("SWEET USB:   - PHY VBUS override, 32-bit (COMMON1 0x%08x CTRL1 0x%08x)\n", *c1, *c2);
++			*c1 = *c1 | (1u << 4);
++			(void)*c1;
++			*c2 = *c2 | 1u;
++			(void)*c2;
++			__asm__ volatile ("dsb sy" ::: "memory");
++			printf("SWEET USB:   - PHY now COMMON1 0x%08x CTRL1 0x%08x\n", *c1, *c2);
++		}
++		if (vbus == 5 && qs != 0) {
++			printf("SWEET USB:   - HS UTMI_OTG_VBUS_VALID write\n");
++			*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = usb_rd(qs, QSCRATCH_HS_PHY_CTRL) | UTMI_OTG_VBUS_VALID;
++			__asm__ volatile ("dsb sy" ::: "memory");
++			printf("SWEET USB:   - HS_PHY_CTRL now 0x%08x\n", usb_rd(qs, QSCRATCH_HS_PHY_CTRL));
++		}
++	}
++
+ 	if (maxstep < 6) {
+ 		printf("SWEET USB: stopping before step 6 (sweetusbstep=%d)\n", maxstep);
+ 		return;
+@@ -1111,6 +1191,9 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	if (livelog && ud.ifp != NULL && kernel_thread_start(ud_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	if (ud.ifp != NULL && kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ }
+ #elif defined(ARM64_BOARD_CONFIG_SWEET)
+ /*
+diff --git a/pexpert/pexpert/arm64/sweet_dev.h b/pexpert/pexpert/arm64/sweet_dev.h
+index 22348e7..6fc40db 100644
+--- a/pexpert/pexpert/arm64/sweet_dev.h
++++ b/pexpert/pexpert/arm64/sweet_dev.h
+@@ -69,12 +69,32 @@
+ #define SWEET_DEV_TOUCH_VREG_NAME "ldoa13"
+ #define SWEET_DEV_TOUCH_VREG_MV 3008
+ 
+-/* USB: usb0 = dwc3@a600000, HS PHY hsphy@88e3000 (not 0x88e2000 as on
+- * SM8150), QMP ssphy@88e8000. Off until the SM8250 GCC offsets are filled
+- * in; sweet_usb.c compiles out. */
+-#define SWEET_DEV_USB           0
++/* USB: usb0 = ssusb@a600000 (dwc3@a600000) + hsphy@88e3000 (femto, the
++ * live tree puts the EUD enable word at 0x88e2000) + ssphy@88e8000; QSCRATCH
++ * = core + 0xf8800. GCC offsets from mainline gcc-sm8250.c / OnePlus
++ * gcc-kona.c (GDSCR 0xf004; master 0xf010, sleep 0xf018, mock utmi 0xf01c,
++ * cfg-noc 0xf07c, aggre 0xf080, phy aux 0xf054, phy com aux 0xf058). Kona
++ * has no USB prim clkref branch (the "xo" clock is RPMh). VBUS mode 4 is the
++ * downstream kona order: femto PHY 32-bit RMW of VBUSVLDEXTSEL0/VBUSVLDEXT0,
++ * then QSCRATCH UTMI_OTG_VBUS_VALID. */
++#define SWEET_DEV_USB           1
++#define SWEET_DEV_USB_GCC_PA    0x00100000u
++#define SWEET_DEV_USB_DWC3_PA   0x0a600000u
++#define SWEET_DEV_USB_QUSB2_PA  0x088e3000u
++#define SWEET_DEV_USB_QSCRATCH_PA 0x0a6f8800u
++#define SWEET_DEV_USB_EUD_EN_PA 0x088e2000u
++#define SWEET_DEV_USB_GDSCR     0x0f004u
++#define SWEET_DEV_USB_CBCR_MASTER 0x0f010u
++#define SWEET_DEV_USB_CBCR_SLEEP  0x0f018u
++#define SWEET_DEV_USB_CBCR_UTMI   0x0f01cu
++#define SWEET_DEV_USB_CBCR_CFGNOC 0x0f07cu
++#define SWEET_DEV_USB_CBCR_AGGRE  0x0f080u
++#define SWEET_DEV_USB_CBCR_AUX    0x0f054u	/* USB3 PHY aux */
++#define SWEET_DEV_USB_CBCR_AUX_NAME "phy-aux"
++#define SWEET_DEV_USB_CBCR_CLKREF 0x0f058u	/* USB3 PHY com aux */
++#define SWEET_DEV_USB_CBCR_CLKREF_NAME "phy-com-aux"
+ #define SWEET_DEV_USB_ARM_ON_EVENT 1
+-#define SWEET_DEV_USB_VBUS_DEFAULT 3
++#define SWEET_DEV_USB_VBUS_DEFAULT 4
+ /* Reset-surviving scratch (DRAM, kernel high bank 0x180000000 + 0x18000000). */
+ #define SWEET_DEV_MARK_PA       0x198000000UL
+ /* Reboot-to-bootloader (sweetreset=N): IMEM restart_reason word and PS_HOLD. */
