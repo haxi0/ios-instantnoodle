@@ -143,6 +143,15 @@
   bit-banged S6SY761 driver on gpio36/37 (SE13), reset 38, irq 39, SM8250
   SOUTH tile 0xf500000; RPMh votes `ldoc1` 1800 mV then `ldoa13` 3008 mV
   (cmd-db from reserved-memory 0x80860000).
+  Log `logs/touch1.txt`: RSC id 0x20000 (v2 layout accepted), cmd-db v1,
+  `ldoc1` addr 0x42e00 and `ldoa13` addr 0x40b00, both votes complete
+  (the RPMh print says "L11C" for both: a hardcoded label in
+  sweet_rpmh.c, cosmetic). Boot-complete ack OK with sda=36/scl=37, device
+  id `ac 37 71`, boot status 0x20 (application). But fw integrity reads
+  0xff (want 0x80) and PANEL_INFO / TOUCH_FUNC / SENSE_ON NACK (err 6);
+  the IC reports touches anyway (1649 events, 45 presses, 36 I2C errors in
+  5 min). Probably the SY771 firmware senses by default after reset; only
+  revisit if touch stops after a display off/on.
 - **NEXT SESSION (start here):** 1) look at the phone; if it shows the
   fastboot screen, replug the cable and run
   `tools/noodle-run.sh noodle-warm4 600` with
