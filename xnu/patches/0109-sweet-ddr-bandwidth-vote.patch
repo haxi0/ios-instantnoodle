@@ -1,0 +1,181 @@
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+index 322a45f..75780a8 100644
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -3,8 +3,8 @@
+  *
+  * Ported from HackiOS by OOSEX GANG (https://github.com/oosexgang/hackios-xnu-kernel,
+  * xnu/files/bsd/dev/redwood_cpufreq.c, APSL 2.0): the EPSS raise, the loop-speed
+- * check and the membench=1 measurement. Their memory-bandwidth vote (ddr=) is not
+- * here yet: it writes RPMh slot set 0 directly and would race bsd/dev/sweet_rpmh.c.
++ * check, the membench=1 measurement and the memory-bandwidth vote (ddr=, ddr_vote=N),
++ * which goes through bsd/dev/sweet_rpmh.c here instead of writing RPMh TCS0 directly.
+  *
+  * The bootloader leaves each cluster at a modest frequency. EPSS has a frequency
+  * table per cluster ("domain") and switches clock source and voltage by itself
+@@ -25,6 +25,7 @@
+ #include <vm/vm_kern.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern int sweet_rpmh_bcm_vote(const char *const *names, const uint32_t *data, unsigned count);
+ void sweet_cpufreq_init(void);
+ 
+ #define EPSS_DOMAIN_SIZE        0x1000UL
+@@ -127,6 +128,36 @@ memory_bench(void)
+ 	kmem_free(kernel_map, b, size);
+ }
+ 
++/*
++ * Memory bandwidth: the most there is on the memory controller (MC0) and the shared hub in
++ * front of it (SH0), and the memory kept on for the CPUs (ACV bit 3), as HackiOS measured:
++ * all cores together 12.4 -> 14.8 GB/s writing, frames over 16.7 ms 34% -> 28%.
++ * BCM word: commit | valid | AB[27:14] | IB[13:0] (Linux icc-bcm-voter.c).
++ */
++#define BCM_COMMIT              (1u << 30)
++#define BCM_VALID               (1u << 29)
++#define BCM_VOTE(x, y)          (BCM_COMMIT | BCM_VALID | ((uint32_t)(x) & 0x3fff) << 14 | ((uint32_t)(y) & 0x3fff))
++#define BCM_ACV_APPS            8
++
++static void
++ddr_raise(void)
++{
++	static const char *const names[3] = { "MC0", "SH0", "ACV" };
++	uint32_t vote = 0x3fff, on = 1, data[3];
++	int error;
++
++	PE_parse_boot_argn("ddr", &on, sizeof(on));
++	PE_parse_boot_argn("ddr_vote", &vote, sizeof(vote));
++	if (!on || vote == 0 || vote > 0x3fff) {
++		printf("SWEET CPUFREQ: no memory bandwidth vote (ddr=%u ddr_vote=%u)\n", on, vote);
++		return;
++	}
++	data[0] = data[1] = BCM_VOTE(vote, vote);
++	data[2] = BCM_VOTE(0, BCM_ACV_APPS);
++	error = sweet_rpmh_bcm_vote(names, data, 3);
++	printf("SWEET CPUFREQ: memory bandwidth vote %u on MC0/SH0 -> %d\n", vote, error);
++}
++
+ void
+ sweet_cpufreq_init(void)
+ {
+@@ -150,6 +181,7 @@ sweet_cpufreq_init(void)
+ 		}
+ 	}
+ 	printf("SWEET CPUFREQ: on core %u a loop ran at %u, now at %u\n", here, before, loop_speed());
++	ddr_raise();
+ 	enabled = 0;
+ 	if (PE_parse_boot_argn("membench", &enabled, sizeof(enabled)) && enabled == 1) {
+ 		memory_bench();
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 0e6e327..24d537b 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -47,6 +47,7 @@ void sweet_rpmh_arc_dump(void);
+ #define RH_DB_MAX       0x100000u /* policy bound, not a DT size */
+ #define RH_VRM          4u
+ #define RH_ARC          3u
++#define RH_BCM          5u      /* bus clock managers (interconnect bandwidth) */
+ #define RH_ARC_MAX      32u      /* 16 u16 levels */
+ #define RH_TIMEOUT_US   100000u
+ 
+@@ -230,6 +231,52 @@ rh_lookup(const char *res, uint32_t *address)
+  * hardware level index to an RPMh voltage corner. Dump the address and table
+  * without voting; a vote needs the dependent MX rail and the AOP contract.
+  */
++/* A bus clock manager's address in cmd-db (slave 5); exactly one match. */
++static int
++rh_bcm_lookup(const char *res, uint32_t *address)
++{
++	uint32_t key[2] = {0, 0};
++	unsigned matches = 0;
++
++	for (unsigned i = 0; i < 8 && res[i]; ++i) {
++		key[i / 4] |= (uint32_t)(uint8_t)res[i] << (8u * (i % 4));
++	}
++	for (unsigned i = 0; i < 8; ++i) {
++		uint32_t h = 8u + 16u * i;
++		unsigned slave = rh_db16(h);
++		if (!slave) {
++			break;
++		}
++		if (slave != RH_BCM) {
++			continue;
++		}
++		uint32_t entries = RH_DB_HEADER + rh_db16(h + 2);
++		unsigned count = rh_db16(h + 6);
++		if ((entries & 3u) || !rh_range(entries, count * RH_DB_ENTRY)) {
++			printf("SWEET RPMH: malformed BCM slave header %u\n", i);
++			return EINVAL;
++		}
++		for (unsigned j = 0; j < count; ++j) {
++			uint32_t e = entries + RH_DB_ENTRY * j;
++			if (rh_read(rh_db, e) != key[0] || rh_read(rh_db, e + 4) != key[1]) {
++				continue;
++			}
++			uint32_t addr = rh_read(rh_db, e + 16);
++			if (((addr >> 16) & 0xfu) != RH_BCM || (addr & 3u)) {
++				printf("SWEET RPMH: invalid BCM entry for %s (%#x)\n", res, addr);
++				return EINVAL;
++			}
++			*address = addr;
++			++matches;
++		}
++	}
++	if (matches != 1) {
++		printf("SWEET RPMH: BCM %s lookup matches=%u; refusing\n", res, matches);
++		return ENODEV;
++	}
++	return 0;
++}
++
+ static int
+ rh_arc_lookup(const char *res, uint32_t *address, uint32_t *table, uint32_t *bytes)
+ {
+@@ -535,6 +582,47 @@ out:
+ 	return error;
+ }
+ 
++/*
++ * Bandwidth votes on bus clock managers (from HackiOS redwood_cpufreq.c ddr_vote(), as
++ * Linux icc-bcm-voter.c casts them): data[i] goes to BCM names[i], up to three in one
++ * ACTIVE TCS. Callers build the BCM words (commit/valid/AB/IB).
++ */
++int sweet_rpmh_bcm_vote(const char *const *names, const uint32_t *data, unsigned count);
++
++int
++sweet_rpmh_bcm_vote(const char *const *names, const uint32_t *data, unsigned count)
++{
++	uint32_t address[3] = {0, 0, 0};
++	int error = EIO;
++
++	if (!names || !data || count == 0 || count > 3) {
++		return EINVAL;
++	}
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	if (rh_poisoned) {
++		printf("SWEET RPMH: previous uncertain transaction; refusing BCM vote\n");
++		goto out;
++	}
++	error = rh_map();
++	for (unsigned i = 0; !error && i < count; ++i) {
++		error = rh_bcm_lookup(names[i], &address[i]);
++	}
++	if (!error) {
++		printf("SWEET RPMH: BCM %s=%#x %s=%#x %s=%#x\n", names[0], address[0],
++		    count > 1 ? names[1] : "-", address[1], count > 2 ? names[2] : "-", address[2]);
++		/* rh_send_cmds adds a base address to per-command offsets: base 0, full addresses */
++		error = rh_send_cmds(0, address, data, count, "BCM bandwidth");
++	}
++out:
++	if (error) {
++		printf("SWEET RPMH: BCM vote failed errno=%d\n", error);
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	return error;
++}
++
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
