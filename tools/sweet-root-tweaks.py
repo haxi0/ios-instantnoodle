@@ -26,6 +26,11 @@ screen (image versions v8-v14 in NOTES.md):
   activation      mobileactivationd data ark seeded; the actual Activated state
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
+  HackiOS prefs   from OOSEX GANG's hackios-xnu-userland (userland/var, inject_sb.c):
+                  BSUIVibrancyEffectViewDisabled (the software renderer draws
+                  vibrant views red: the lock screen clock), FBLaunchWatchdogScale
+                  20 (frontboard + springboard), SBShowBatteryPercentage,
+                  DMLastMigrationResults success
 """
 import glob, os, plistlib, shutil, sys
 
@@ -136,9 +141,16 @@ def main():
     audio(root)
     merge_pref(root, 'com.apple.migration', {
         'LastSystemVersion': BUILD,
-        'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}})
+        'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD},
+        'DMLastMigrationResults': {'success': True, 'buildVersion': BUILD}})
+    merge_pref(root, 'com.apple.frontboard', {'FBLaunchWatchdogScale': 20.0})
     sb = {'BKNoWatchdogs': True,
-          'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0}}
+          'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
+          'FBLaunchWatchdogScale': 20.0,
+          'SBShowBatteryPercentage': True,
+          # CoreAnimation's software renderer draws vibrant views (the lock screen
+          # clock) red; with this they show their plain content (HackiOS inject_sb.c)
+          'BSUIVibrancyEffectViewDisabled': True}
     if not KEEP_SETUP:
         sb['MCForceShowCloudConfigurationUI'] = False
     merge_pref(root, 'com.apple.springboard', sb)

@@ -343,4 +343,5 @@ in its header:
 | Here | From HackiOS |
 |---|---|
 | `bsd/dev/sweet_cpufreq.c` (xnu 0107, 0109) | `xnu/files/bsd/dev/redwood_cpufreq.c`: EPSS clock raise, loop-speed check, `membench=1`, memory-bandwidth vote on MC0/SH0/ACV (`ddr=0` off; sent through `sweet_rpmh.c`) |
+| `tools/sweet-root-tweaks.py` (HackiOS prefs) | hackios-xnu-userland `userland/var/` and `userland/src/inject_sb.c`: `BSUIVibrancyEffectViewDisabled` (white lock-screen clock under the software renderer), `FBLaunchWatchdogScale`, battery percentage, migration result |
 | `bsd/dev/sweet_adreno.c` (xnu 0108) | `xnu/files/bsd/dev/redwood_adreno.c`: the staged Adreno bring-up (`adreno=N`), steps 1-10 so far, with SM8250/Adreno 650 values |
