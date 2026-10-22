@@ -131,6 +131,18 @@
   `sweetusb=1` default) + `sweetreset=90`, cpus=8, sweetfb_noconsole=1.
   Booted 15:27, lock screen within ~2 min: the Apple-logo "stall" was only
   the first-boot LaunchServices rebuild. No code change was needed for it.
+- **USB probe (`logs/usb-probe.txt`, kernel 0105):** GDSC + all 7 USB clocks
+  on, EUD off, controller is **DWC_usb31** (GSNPSID 0x33313130), halted
+  (RUN_STOP 0), ABL's last link was SuperSpeed, ABL event buffer 0x9a659000.
+  Femto PHY COMMON1 0x3b / CTRL1 0x01: **ABL already set the PHY-side VBUS
+  override** (VBUSVLDEXTSEL0 + VBUSVLDEXT0); QSCRATCH HS/SS_PHY_CTRL 0. Next
+  gadget try: `sweetusb=2 sweetvbus=0` (no VBUS write at all).
+- **TOUCH WORKS (2026-10-22 15:48, kernel 0106 `9e865fe`, CI 39780182390,
+  SHA256 `7cfa4015...`, `sweettouchdelay=20`, run `touch1`).** User: taps land
+  where the finger is, swipes work, no flip needed. 0106: guacamole's
+  bit-banged S6SY761 driver on gpio36/37 (SE13), reset 38, irq 39, SM8250
+  SOUTH tile 0xf500000; RPMh votes `ldoc1` 1800 mV then `ldoa13` 3008 mV
+  (cmd-db from reserved-memory 0x80860000).
 - **NEXT SESSION (start here):** 1) look at the phone; if it shows the
   fastboot screen, replug the cable and run
   `tools/noodle-run.sh noodle-warm4 600` with
