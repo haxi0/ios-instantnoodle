@@ -1,0 +1,185 @@
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 2d8d587..0e6e327 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -110,9 +110,13 @@ rh_map(void)
+ 	if (!rh_tcs) {
+ 		rh_tcs = ml_io_map(RH_TCS_PA, RH_TCS_SIZE);
+ 	}
++#ifndef SWEET_DEV_RPMH_DB_PA
+ 	if (!rh_dict) {
+ 		rh_dict = ml_io_map(RH_DICT_PA, 8);
+ 	}
++#else
++	rh_dict = 1;    /* cmd-db address comes from the board header */
++#endif
+ 	if (!rh_rsc || !rh_tcs || !rh_dict) {
+ 		printf("SWEET RPMH: RSC/locator mapping failed\n");
+ 		return ENOMEM;
+@@ -133,9 +137,16 @@ rh_map(void)
+ 		return ENODEV;
+ 	}
+ 	if (!rh_db) {
++#ifdef SWEET_DEV_RPMH_DB_PA
++		/* The live tree's reserved-memory qcom,cmd-db node (mainline cmd-db.c). */
++		uint32_t pa = SWEET_DEV_RPMH_DB_PA;
++		uint32_t size = SWEET_DEV_RPMH_DB_SIZE;
++		printf("SWEET RPMH: cmd-db reserved-memory pa=%#x size=%#x\n", pa, size);
++#else
+ 		uint32_t pa = rh_read(rh_dict, 0);
+ 		uint32_t size = rh_read(rh_dict, 4);
+ 		printf("SWEET RPMH: cmd-db locator=%#x pa=%#x size=%#x\n", RH_DICT_PA, pa, size);
++#endif
+ 		/* Firmware supplies the reserved RAM address; never scan physical RAM. */
+ 		if (pa < 0x80000000u || (pa & 3u) || (size & 3u) ||
+ 		    size < RH_DB_HEADER || size > RH_DB_MAX ||
+@@ -527,8 +538,12 @@ out:
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+-	/* Board-specific helper: only the board's touch rail, sane voltage. */
+-	if (!res || strcmp(res, SWEET_DEV_TOUCH_VREG_NAME) || mv < 2950 || mv > 3400) {
++	/* Board-specific helper: only the board's touch rails, sane voltages. */
++	bool ok = res && !strcmp(res, SWEET_DEV_TOUCH_VREG_NAME) && mv >= 2950 && mv <= 3400;
++#ifdef SWEET_DEV_TOUCH_VREG2_NAME
++	ok = ok || (res && !strcmp(res, SWEET_DEV_TOUCH_VREG2_NAME) && mv == SWEET_DEV_TOUCH_VREG2_MV);
++#endif
++	if (!ok) {
+ 		printf("SWEET RPMH: expected %s and 2950..3400 mV\n", SWEET_DEV_TOUCH_VREG_NAME);
+ 		return EINVAL;
+ 	}
+diff --git a/bsd/dev/sweet_touch_sec.c b/bsd/dev/sweet_touch_sec.c
+index ac17902..3a4e492 100644
+--- a/bsd/dev/sweet_touch_sec.c
++++ b/bsd/dev/sweet_touch_sec.c
+@@ -65,6 +65,13 @@ void sweet_touch_init(void);
+ #define TS_MASK_TOUCH       0x01u
+ #define TS_MAX_FINGERS      10u
+ 
++#ifdef SWEET_DEV_TOUCH_TLMM_TILE_PA
++/* OnePlus 8 (SM8250): all touch pins in one TLMM tile, see sweet_dev.h. */
++#define TS_PIN_RESET    SWEET_DEV_TOUCH_PIN_RESET
++#define TS_PIN_IRQ      SWEET_DEV_TOUCH_PIN_IRQ
++#define TS_PIN_I2C_A    SWEET_DEV_TOUCH_PIN_I2C_A
++#define TS_PIN_I2C_B    SWEET_DEV_TOUCH_PIN_I2C_B
++#else
+ /* Touch pins on this board (live device tree: tp_1v8/tp_rst/tp_irq). */
+ #define TS_PIN_RESET    54u
+ #define TS_PIN_1V8      119u
+@@ -72,6 +79,7 @@ void sweet_touch_init(void);
+ /* SE17 I2C lines; the roles are auto-detected at run time. */
+ #define TS_PIN_I2C_A    55u
+ #define TS_PIN_I2C_B    56u
++#endif
+ 
+ /*
+  * SM8150 splits the TLMM into four tile arrays inside the 0x03000000 region
+@@ -86,6 +94,10 @@ static vm_offset_t ts_tiles[TS_TILE_COUNT];
+ static unsigned
+ ts_tile(unsigned pin)
+ {
++#ifdef SWEET_DEV_TOUCH_TLMM_TILE_PA
++	(void)pin;
++	return TS_TILE_SOUTH;
++#else
+ 	if (pin <= 7 || pin == 38 || (pin >= 51 && pin <= 82) ||
+ 	    (pin >= 98 && pin <= 101) || (pin >= 114 && pin <= 124) ||
+ 	    (pin >= 126 && pin <= 154)) {
+@@ -101,6 +113,7 @@ ts_tile(unsigned pin)
+ 		return TS_TILE_EAST;
+ 	}
+ 	return TS_TILE_WEST;		/* 105-113, 125, 155-168 */
++#endif
+ }
+ 
+ #define TS_GPIO_OFF(n)    ((uint32_t)(n) * 0x1000u)
+@@ -489,6 +502,44 @@ ts_thread(void *arg __unused, wait_result_t wr __unused)
+ 	printf("SWEET TOUCH: starting in %u s\n", delay_s);
+ 	ts_wait(delay_s * 1000u);
+ 
++#ifdef SWEET_DEV_TOUCH_TLMM_TILE_PA
++	/* The SE is not touched (bit-banged bus; its clocks may be off). */
++	printf("SWEET TOUCH: mapping TLMM tile %#x\n", SWEET_DEV_TOUCH_TLMM_TILE_PA);
++	ts_tiles[TS_TILE_SOUTH] = ml_io_map(SWEET_DEV_TOUCH_TLMM_TILE_PA, 0x100000);
++	if (!ts_tiles[TS_TILE_SOUTH]) {
++		printf("SWEET TOUCH: MMIO mapping failed\n");
++		goto out;
++	}
++	ts.sda_pin = TS_PIN_I2C_A;
++	ts.scl_pin = TS_PIN_I2C_B;
++	printf("SWEET TOUCH: pins reset=%#x/%#x irq=%#x/%#x i2c=%#x/%#x\n",
++	    ts_gpio_rd(TS_PIN_RESET), ts_gpio_io_rd(TS_PIN_RESET),
++	    ts_gpio_rd(TS_PIN_IRQ), ts_gpio_io_rd(TS_PIN_IRQ),
++	    ts_gpio_rd(TS_PIN_I2C_A), ts_gpio_rd(TS_PIN_I2C_B));
++	bb_level(TS_PIN_I2C_A, false);
++	bb_level(TS_PIN_I2C_B, false);
++	ts_gpio(TS_PIN_IRQ, 0, 0, 3, false, false);   /* input, bias-disable */
++	ts_gpio(TS_PIN_RESET, 0, 3, 3, true, false);  /* reset asserted during power-up */
++	ts.vreg_err = sweet_rpmh_vreg_enable(SWEET_DEV_TOUCH_VREG2_NAME, SWEET_DEV_TOUCH_VREG2_MV);
++	printf("SWEET TOUCH: vreg %s %u mV -> %d\n", SWEET_DEV_TOUCH_VREG2_NAME,
++	    SWEET_DEV_TOUCH_VREG2_MV, ts.vreg_err);
++	ts_wait(1);
++	int vreg2_err = ts.vreg_err;
++	ts.vreg_err = sweet_rpmh_vreg_enable(SWEET_DEV_TOUCH_VREG_NAME, SWEET_DEV_TOUCH_VREG_MV);
++	printf("SWEET TOUCH: vreg %s %u mV -> %d\n", SWEET_DEV_TOUCH_VREG_NAME,
++	    SWEET_DEV_TOUCH_VREG_MV, ts.vreg_err);
++	if (!ts.vreg_err) {
++		ts.vreg_err = vreg2_err;
++	}
++	ts_wait(20);
++	ts_gpio(TS_PIN_RESET, 0, 3, 3, true, true);   /* reset released (tp_rst_active: pull-up) */
++	ts_wait(140);                                 /* mainline power-on wait */
++	bb_recover();
++	printf("SWEET TOUCH: pins now rst=%#x/%#x irq=%#x/%#x bus=%#x/%#x\n",
++	    ts_gpio_rd(TS_PIN_RESET), ts_gpio_io_rd(TS_PIN_RESET),
++	    ts_gpio_rd(TS_PIN_IRQ), ts_gpio_io_rd(TS_PIN_IRQ),
++	    ts_gpio_io_rd(TS_PIN_I2C_A), ts_gpio_io_rd(TS_PIN_I2C_B));
++#else
+ 	printf("SWEET TOUCH: mapping GCC/TLMM/SE17\n");
+ 	ts_tiles[TS_TILE_WEST] = ml_io_map(SWEET_DEV_TOUCH_NORTH_PA + 0x00100000u, 0x100000);
+ 	ts_tiles[TS_TILE_EAST] = ml_io_map(SWEET_DEV_TOUCH_NORTH_PA + 0x00500000u, 0x100000);
+@@ -537,6 +588,7 @@ ts_thread(void *arg __unused, wait_result_t wr __unused)
+ 	    ts_gpio_rd(TS_PIN_1V8), ts_gpio_io_rd(TS_PIN_1V8),
+ 	    ts_gpio_rd(TS_PIN_IRQ), ts_gpio_io_rd(TS_PIN_IRQ),
+ 	    ts_gpio_io_rd(TS_PIN_I2C_A), ts_gpio_io_rd(TS_PIN_I2C_B));
++#endif
+ 
+ 	ts.ack_err = ts_wait_ready(TS_ACK_BOOT_COMPLETE, 50);
+ 	if (ts.ack_err) {
+diff --git a/pexpert/pexpert/arm64/sweet_dev.h b/pexpert/pexpert/arm64/sweet_dev.h
+index 6fc40db..8fbfc6f 100644
+--- a/pexpert/pexpert/arm64/sweet_dev.h
++++ b/pexpert/pexpert/arm64/sweet_dev.h
+@@ -60,14 +60,27 @@
+ #define SWEET_DEV_RPMH_TCS_SIZE 0x3000u
+ #define SWEET_DEV_RPMH_DICT_PA  0x0c3f000cu      /* VERIFY */
+ 
+-/* Touch: Samsung S6SY761 ("SY771") @0x48 on i2c@a94000, reset tlmm 38,
+- * IRQ tlmm 39, vdd pm8150_l13 ("ldoa13", 3.008 V), vcc pm8150a_l1
+- * ("ldoc1", 1.8 V). Off until sweet_touch_sec.c learns the SM8250 TLMM
+- * tiles (pinctrl@f000000) and the second rail. */
++/* Touch: Samsung S6SY761 ("SY771") @0x48 on i2c@a94000 (SE13, live tree
++ * qupv3_se13_i2c_active = gpio36/gpio37, bias-disable), reset tlmm 38, IRQ
++ * tlmm 39, vdd_2v8 pm8150_l13 ("ldoa13", 3.008 V), vcc_1v8 pm8150a_l1
++ * ("ldoc1", 1.8 V); no 1.8 V enable GPIO. sweet_touch_sec.c bit-bangs the
++ * bus as on guacamole. All four pins sit in the SM8250 SOUTH tile
++ * (mainline pinctrl-sm8250.c: west 0xf100000, south 0xf500000, north
++ * 0xf900000; pins at tile + 0x1000 * gpio). */
+ #define SWEET_DEV_TOUCH         0
+-#define SWEET_DEV_TOUCH_SEC     0
++#define SWEET_DEV_TOUCH_SEC     1
+ #define SWEET_DEV_TOUCH_VREG_NAME "ldoa13"
+ #define SWEET_DEV_TOUCH_VREG_MV 3008
++#define SWEET_DEV_TOUCH_VREG2_NAME "ldoc1"
++#define SWEET_DEV_TOUCH_VREG2_MV 1800
++#define SWEET_DEV_TOUCH_TLMM_TILE_PA 0x0f500000u
++#define SWEET_DEV_TOUCH_PIN_RESET 38u
++#define SWEET_DEV_TOUCH_PIN_IRQ   39u
++#define SWEET_DEV_TOUCH_PIN_I2C_A 36u
++#define SWEET_DEV_TOUCH_PIN_I2C_B 37u
++/* cmd-db: reserved-memory@80860000 (qcom,cmd-db, 0x20000) in the live tree. */
++#define SWEET_DEV_RPMH_DB_PA    0x80860000u
++#define SWEET_DEV_RPMH_DB_SIZE  0x20000u
+ 
+ /* USB: usb0 = ssusb@a600000 (dwc3@a600000) + hsphy@88e3000 (femto, the
+  * live tree puts the EUD enable word at 0x88e2000) + ssphy@88e8000; QSCRATCH

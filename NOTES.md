@@ -125,6 +125,12 @@
   driverkitd SIGKILL as before. After swap 25 SpringBoard and backboardd sit
   in mach_msg (idle). `adb reboot bootloader` from TWRP attached to USB
   without a replug.
+- **MILESTONE 2026-10-22 ~15:29: iOS LOCK SCREEN ON THE ONEPLUS 8** (user
+  saw it). Warm boot, image `shim/out/usb-probe.img` = kernel 0105
+  (`97ba4e2`, CI 39777401995, SHA256 `2dc416f0...`, read-only USB probe
+  `sweetusb=1` default) + `sweetreset=90`, cpus=8, sweetfb_noconsole=1.
+  Booted 15:27, lock screen within ~2 min: the Apple-logo "stall" was only
+  the first-boot LaunchServices rebuild. No code change was needed for it.
 - **NEXT SESSION (start here):** 1) look at the phone; if it shows the
   fastboot screen, replug the cable and run
   `tools/noodle-run.sh noodle-warm4 600` with
