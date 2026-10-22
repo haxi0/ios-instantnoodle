@@ -3,6 +3,17 @@
 ## Agent handoff / active work (2026-10-21, latest)
 
 ### >>> 2026-10-22 ~16:40: PROJECT REBASED ONTO HACKIOS (read first) <<<
+- **MILESTONE 2026-10-22 ~17:05: HACKIOS BOOTS iOS ON THE ONEPLUS 8** (user:
+  "it booted", after the Apple logo). Stock HackiOS kernel/userland (iOS 16.5
+  20F66, system image in RAM: 2376 MB uploaded in 76 s over the loader's USB
+  link), `cpus=8`, no device drivers yet. What it took (hackios fork, branch
+  `instantnoodle`, commits 6ac9aab + f7dbb9d): Mu-Silicium `instantnoodlePkg`
+  from `kebabPkg`; a reserved "XNU Payload" 0xF0000000/0x04000000 in the
+  memory map (without it the boot manager found no XNUP container); the
+  phone's own USB DXE drivers (kebab's gave `usb: start failed
+  800000000000000e`); `platform_instantnoodle` in xnuloader (fb 0x9c000000);
+  `common/devices/instantnoodle.conf`. Debug trick: the XNU loader writes its
+  log to the `logdump` partition (read it from TWRP with dd).
 - **Decision (user, 2026-10-22):** the OnePlus 8 port moves onto **HackiOS**
   (OOSEX GANG) so it can be contributed upstream as a new device. This repo
   stays as the working fallback (lock screen + touch + EPSS cpufreq on the
