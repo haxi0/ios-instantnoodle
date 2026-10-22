@@ -332,3 +332,14 @@ userland side possible. The GPU roadmap references
 AdrenoPM4, AdrenoFirmware, ArmSmmu4K) and Mesa's
 [freedreno/Turnip](https://gitlab.freedesktop.org/mesa/mesa) drivers.
 iOS itself is Apple's and is not distributed here.
+
+The OnePlus 8 (instantnoodle) port takes code from **HackiOS** by
+[OOSEX GANG](https://t.me/oosexgangdevs)
+([hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel), APSL 2.0;
+[hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland), MIT),
+XNU on the POCO X5 Pro 5G (SM7325). Each ported file names its HackiOS source
+in its header:
+
+| Here | From HackiOS |
+|---|---|
+| `bsd/dev/sweet_cpufreq.c` (xnu 0107) | `xnu/files/bsd/dev/redwood_cpufreq.c`: EPSS clock raise, loop-speed check, `membench=1` |

@@ -1,0 +1,217 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index da3bc2e..f6265e0 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -113,6 +113,7 @@ bsd/dev/sweet_touch_sec.c		standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
++bsd/dev/sweet_cpufreq.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+new file mode 100644
+index 0000000..322a45f
+--- /dev/null
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -0,0 +1,165 @@
++/*
++ * SWEET: CPU cores at full clock through the SoC's EPSS block.
++ *
++ * Ported from HackiOS by OOSEX GANG (https://github.com/oosexgang/hackios-xnu-kernel,
++ * xnu/files/bsd/dev/redwood_cpufreq.c, APSL 2.0): the EPSS raise, the loop-speed
++ * check and the membench=1 measurement. Their memory-bandwidth vote (ddr=) is not
++ * here yet: it writes RPMh slot set 0 directly and would race bsd/dev/sweet_rpmh.c.
++ *
++ * The bootloader leaves each cluster at a modest frequency. EPSS has a frequency
++ * table per cluster ("domain") and switches clock source and voltage by itself
++ * when told which row is wanted; the hardware limits manager (LMh / DCVSh) still
++ * throttles on temperature. Register layout: Linux drivers/cpufreq/qcom-cpufreq-hw.c
++ * ("epss" variant). Default on for boards that define SWEET_DEV_EPSS_PA;
++ * boot-arg cpufreq=0 leaves the bootloader's clocks alone.
++ */
++#include <pexpert/arm64/sweet_dev.h>
++
++#if defined(ARM64_BOARD_CONFIG_SWEET) && defined(SWEET_DEV_EPSS_PA)
++#include <kern/clock.h>
++#include <libkern/libkern.h>
++#include <mach/mach_types.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <sys/systm.h>
++#include <vm/vm_kern.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++void sweet_cpufreq_init(void);
++
++#define EPSS_DOMAIN_SIZE        0x1000UL
++#define EPSS_DOMAINS            3
++#define EPSS_FREQ_TABLE         0x100           /* a word per row: [31:30] clock source, [7:0] multiple of 19.2 MHz */
++#define EPSS_TABLE_ROWS         40
++#define EPSS_PERF_STATE         0x320           /* the row that is wanted */
++#define XO_KHZ                  19200
++#define ALTERNATE_KHZ           300000          /* source 0: a fixed 300 MHz */
++
++/* How fast a simple loop runs, in thousands of iterations per millisecond. */
++static uint32_t
++loop_speed(void)
++{
++	volatile uint64_t sink = 0;
++	uint64_t start = mach_absolute_time(), nanos;
++
++	for (uint32_t i = 0; i < 2000000; i++) {
++		sink += i;
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &nanos);
++	return nanos ? (uint32_t)(2000000ULL * 1000 / nanos) : 0;
++}
++
++/* Cluster of a core by its MPIDR Aff1 (live tree qcom,freq-domain: cpu0-3, cpu4-6, cpu7). */
++static uint32_t
++domain_of(uint32_t phys_id)
++{
++	uint32_t core = (phys_id >> 8) & 0xff;
++
++	return core < 4 ? 0 : core < 7 ? 1 : 2;
++}
++
++static void
++raise_domain(uint32_t domain, uint32_t cores)
++{
++	uint32_t top = 0, top_khz = 0, was;
++	vm_offset_t base;
++
++	base = ml_io_map(SWEET_DEV_EPSS_PA + domain * EPSS_DOMAIN_SIZE, EPSS_DOMAIN_SIZE);
++	if (base == 0) {
++		printf("SWEET CPUFREQ: domain %u map failed\n", domain);
++		return;
++	}
++	for (uint32_t row = 0; row < EPSS_TABLE_ROWS; row++) {
++		uint32_t entry = *(volatile uint32_t *)(base + EPSS_FREQ_TABLE + 4 * row);
++		uint32_t khz = (entry >> 30) ? XO_KHZ * (entry & 0xff) : ALTERNATE_KHZ;
++
++		if (row > 0 && khz <= top_khz) {
++			break;                  /* the table ends by repeating its last row */
++		}
++		top = row;
++		top_khz = khz;
++	}
++	was = *(volatile uint32_t *)(base + EPSS_PERF_STATE);
++	*(volatile uint32_t *)(base + EPSS_PERF_STATE) = top;
++	delay_for_interval(20, NSEC_PER_MSEC);
++	printf("SWEET CPUFREQ: domain %u (%u cores): row %u -> %u, %u MHz\n", domain, cores, was, top,
++	    top_khz / 1000);
++}
++
++/* Boot-arg membench=1: memory write/read/copy speed of one core, MB/s (32 MB buffers). */
++static void
++memory_bench(void)
++{
++	const vm_size_t size = 32u << 20;
++	vm_offset_t a = 0, b = 0;
++	uint64_t began, ns[3] = { 0, 0, 0 };
++	volatile uint64_t sum = 0;
++
++	if (kmem_alloc(kernel_map, &a, size, KMA_KOBJECT | KMA_DATA, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS ||
++	    kmem_alloc(kernel_map, &b, size, KMA_KOBJECT | KMA_DATA, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++		printf("SWEET CPUFREQ: membench: no memory\n");
++		return;
++	}
++	memset((void *)a, 1, size);
++	memset((void *)b, 2, size);
++	for (int round = 0; round < 4; round++) {
++		uint64_t t;
++
++		began = mach_absolute_time();
++		memset((void *)a, round, size);
++		absolutetime_to_nanoseconds(mach_absolute_time() - began, &t);
++		ns[0] += t;
++		began = mach_absolute_time();
++		for (const uint64_t *p = (const uint64_t *)b, *end = (const uint64_t *)(b + size); p < end; p += 8) {
++			sum += p[0] + p[1] + p[2] + p[3] + p[4] + p[5] + p[6] + p[7];
++		}
++		absolutetime_to_nanoseconds(mach_absolute_time() - began, &t);
++		ns[1] += t;
++		began = mach_absolute_time();
++		memcpy((void *)b, (const void *)a, size);
++		absolutetime_to_nanoseconds(mach_absolute_time() - began, &t);
++		ns[2] += t;
++	}
++	printf("SWEET CPUFREQ: membench on core %llu: writing %llu MB/s, reading %llu MB/s, copying %llu MB/s\n",
++	    (__builtin_arm_rsr64("MPIDR_EL1") >> 8) & 0xff, 4ull * (size >> 20) * 1000000000ull / ns[0],
++	    4ull * (size >> 20) * 1000000000ull / ns[1], 4ull * (size >> 20) * 1000000000ull / ns[2]);
++	kmem_free(kernel_map, a, size);
++	kmem_free(kernel_map, b, size);
++}
++
++void
++sweet_cpufreq_init(void)
++{
++	const ml_topology_info_t *topology = ml_get_topology_info();
++	uint32_t enabled = 1, cores[EPSS_DOMAINS] = { 0 }, before, here;
++
++	PE_parse_boot_argn("cpufreq", &enabled, sizeof(enabled));
++	if (!enabled) {
++		printf("SWEET CPUFREQ: off (cpufreq=0)\n");
++		return;
++	}
++	for (unsigned int i = 0; i < topology->num_cpus; i++) {
++		cores[domain_of(topology->cpus[i].phys_id)]++;
++	}
++	/* (whichever core this thread happens to be on: it only goes to the log) */
++	here = (uint32_t)(__builtin_arm_rsr64("MPIDR_EL1") >> 8) & 0xff;
++	before = loop_speed();
++	for (uint32_t domain = 0; domain < EPSS_DOMAINS; domain++) {
++		if (cores[domain] != 0) {
++			raise_domain(domain, cores[domain]);
++		}
++	}
++	printf("SWEET CPUFREQ: on core %u a loop ran at %u, now at %u\n", here, before, loop_speed());
++	enabled = 0;
++	if (PE_parse_boot_argn("membench", &enabled, sizeof(enabled)) && enabled == 1) {
++		memory_bench();
++	}
++}
++#elif defined(ARM64_BOARD_CONFIG_SWEET)
++void sweet_cpufreq_init(void);
++
++void
++sweet_cpufreq_init(void)
++{
++}
++#endif
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 0a64228..75d2106 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -53,6 +53,7 @@ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ void sweet_gpu_init(void);
+ extern void sweet_touch_init(void);
++extern void sweet_cpufreq_init(void);
+ extern void sweet_usb_probe(void);
+ 
+ #define REG_CAP         0x00
+@@ -656,6 +657,7 @@ sweet_ufs_init(void)
+ 	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
+ 	sweet_log_start();
++	sweet_cpufreq_init();
+ 	sweet_sample_start();
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+diff --git a/pexpert/pexpert/arm64/sweet_dev.h b/pexpert/pexpert/arm64/sweet_dev.h
+index 8fbfc6f..97feee3 100644
+--- a/pexpert/pexpert/arm64/sweet_dev.h
++++ b/pexpert/pexpert/arm64/sweet_dev.h
+@@ -108,6 +108,9 @@
+ #define SWEET_DEV_USB_CBCR_CLKREF_NAME "phy-com-aux"
+ #define SWEET_DEV_USB_ARM_ON_EVENT 1
+ #define SWEET_DEV_USB_VBUS_DEFAULT 4
++/* CPU clocks: EPSS qcom,cpufreq-hw-epss, freq-domain0..2 at 0x18591000 + 0x1000 * n
++ * (cpu0-3, cpu4-6, cpu7; bsd/dev/sweet_cpufreq.c, from HackiOS). */
++#define SWEET_DEV_EPSS_PA       0x18591000UL
+ /* Reset-surviving scratch (DRAM, kernel high bank 0x180000000 + 0x18000000). */
+ #define SWEET_DEV_MARK_PA       0x198000000UL
+ /* Reboot-to-bootloader (sweetreset=N): IMEM restart_reason word and PS_HOLD. */
