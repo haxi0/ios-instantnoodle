@@ -2,6 +2,40 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> 2026-10-22 ~16:40: PROJECT REBASED ONTO HACKIOS (read first) <<<
+- **Decision (user, 2026-10-22):** the OnePlus 8 port moves onto **HackiOS**
+  (OOSEX GANG) so it can be contributed upstream as a new device. This repo
+  stays as the working fallback (lock screen + touch + EPSS cpufreq on the
+  phone) and as the reference for the SM8250 drivers to port.
+- Forks: `haxi0/hackios-xnu-kernel`, `haxi0/hackios-xnu-userland` (remote
+  `upstream` = oosexgang). Workspace: `../hackios/` (kernel repo; userland is
+  checked out into the same tree, git dir `.userland.git`, `common/ugit`).
+  Read-only reference clones: `../hackios-ref/`.
+- **NixOS host support** on branch `nixos-host` of the kernel fork (`8deb898`,
+  pushed, no PR opened yet - the user decides): `shell.nix` (clang/lld, gcc,
+  7-Zip 26 as `7z`, qemu + edk2, autotools, ncurses, libuuid,
+  `XNU_CLANG_DIR`), `xnu-clang`/`install` without hardcoded /usr/bin,
+  `setup.sh` makes the SDK copy writable (theos from the Nix store). Run
+  everything as `nix-shell --run '...'` in `../hackios`. Verified:
+  `xnu-deps/setup.sh`, `./xnu-build.sh -j16 -k` = 55 s (same global symbols
+  as their prebuilt kernel), `xnuloader/build.sh`.
+- In progress: `ios165/fetch.sh` (iOS 16.5 iPhone10,3 20F66, 7.4 GB) for a
+  QEMU run, and `uefi/apply.sh` (Mu-Silicium at their BASE e51cd877).
+- **instantnoodle on HackiOS, plan:** (1) UEFI `instantnoodlePkg` from
+  Mu-Silicium's `kebabPkg` (OnePlus 8T, SM8250, 1080x2400, FD 0x9FC00000
+  size 0x300000, RAM base 0x80000000, boot header v1, gzip kernel + DTB),
+  their two Mu-Silicium patches (XNUP payload to 0xF0000000 - check it is
+  free RAM in our memory map - and the XNU loader start); DXE binaries:
+  first Device-Binaries `kebab` (pre-patched), fallback our own
+  `research/uefi-xbl_b/BOOT.XF.3.2-00295-SM8250-1/` (88 drivers, UEFIReader
+  from `../tools-ext/UEFIReader`, unpatched: Silicium's 5 binary patches
+  would need redoing). Phone RAM: 8 GB. (2) `common/new-device.sh
+  instantnoodle` with `dtb/instantnoodle-live.dtb`, loader `struct
+  platform`. (3) framebuffer-only boot (their README: reaches the lock
+  screen with framebuffer + CPU). (4) port from this repo: S6SY761 touch ->
+  `/dev/redwood-touch`, PM8150 keys, UFS (SM8250), EPSS (identical), then
+  GPU (a650 vs their a642L) and Wi-Fi (QCA6390 needs PCIe + MHI).
+
 ### Session handoff (2026-10-22 00:15): instantnoodle (OnePlus 8) scaffold
 - This repo (`haxi0/ios-instantnoodle`) now targets the **OnePlus 8**
   (instantnoodle, SM8250) as a third board; see `INSTANTNOODLE.md` for the
