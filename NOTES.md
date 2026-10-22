@@ -14,6 +14,16 @@
   800000000000000e`); `platform_instantnoodle` in xnuloader (fb 0x9c000000);
   `common/devices/instantnoodle.conf`. Debug trick: the XNU loader writes its
   log to the `logdump` partition (read it from TWRP with dd).
+- **Home screen, buttons and touch under HackiOS (2026-10-22 ~17:20,
+  hackios `ce8ef8f`):** iOS home screen right after boot (photo
+  `../hackios/logs/MILESTONE-instantnoodle-homescreen-2026-10-22.png`);
+  xnuloader passes `board=<platform>`; `redwood_buttons.c` per-board keys
+  (PM8150 PON 0x0800 subtype 4 = power, GPIO6/7 = volume up/down) - presses
+  read on the phone; `instantnoodle_touch.c` (S6SY761 bit-banged, ldoc1 +
+  ldoa13 via RPMh) - user: touch works. Runs: the phone stays in the
+  resident loader between runs (`./xl run`, system image uploaded once per
+  loader session), logs in `../hackios/logs/*-run.log`. Next: cpufreq=1
+  (EPSS identical to redwood), then storage, GPU (a650), Wi-Fi (QCA6390).
 - **Decision (user, 2026-10-22):** the OnePlus 8 port moves onto **HackiOS**
   (OOSEX GANG) so it can be contributed upstream as a new device. This repo
   stays as the working fallback (lock screen + touch + EPSS cpufreq on the
