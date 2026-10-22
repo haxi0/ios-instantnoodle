@@ -115,6 +115,16 @@
   pulls up; runs 1/2 happened to attach) or the reset did not fire. Unknown
   without looking at the phone. A 30-min watcher then pulls
   `logs/noodle-warm3.txt` and powers the phone off from TWRP if it shows up.
+- **Run 3 result (pulled 2026-10-22 from TWRP, `logs/noodle-warm3.txt`,
+  3124 lines, flush #60).** The reset did fire (`SWEET RESET: sweetreset
+  deadline reached` is the last line), so the missing USB was the ABL attach
+  quirk. Warm boot: `display on`, swaps 1-4 (Apple logo), `display off`,
+  then **`display on` again and swaps 7..25** - SpringBoard drew past the
+  Apple logo once the LS database existed. PosterBoard (lock-screen poster
+  renderer) crashed once (sig 5, SIGTRAP in a framework) and was relaunched;
+  driverkitd SIGKILL as before. After swap 25 SpringBoard and backboardd sit
+  in mach_msg (idle). `adb reboot bootloader` from TWRP attached to USB
+  without a replug.
 - **NEXT SESSION (start here):** 1) look at the phone; if it shows the
   fastboot screen, replug the cable and run
   `tools/noodle-run.sh noodle-warm4 600` with
